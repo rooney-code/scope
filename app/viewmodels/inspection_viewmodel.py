@@ -71,6 +71,13 @@ class InspectionViewModel(QObject):
         self.phase_changed.emit(self.state_machine.phase.name)
         return direction
 
+    def start_direction(self, direction: TravelDirection) -> TravelDirection:
+        """방향별 박스의 시작/재시작 버튼 - 순서 큐 없이 어떤 방향이든 바로 (재)시작한다.
+        다른 방향이 진행 중이었다면 그 미완성 데이터는 폐기된다(상태기계가 처리)."""
+        result = self.state_machine.start_direction(direction)
+        self.phase_changed.emit(self.state_machine.phase.name)
+        return result
+
     def mark_far_point_reached(self) -> None:
         self.state_machine.mark_far_point_reached()
         self._after_state_change()

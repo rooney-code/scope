@@ -22,6 +22,7 @@ from app.views.main_window import MainWindow
 from core.calibration.grid_auto_detector import GridDetectionResult
 from core.camera.mock_camera_service import MockCameraService
 from core.config.settings import load_default_settings
+from core.inspection.models import TravelDirection
 from core.inspection.travel_test_state_machine import Phase
 
 
@@ -52,9 +53,7 @@ def main() -> None:
     vm.calibration.profile.px_per_moa_x = camera.px_per_moa()
     vm.calibration.profile.px_per_moa_y = camera.px_per_moa()
 
-    for direction, checkbox in window.stage2_view._direction_checks.items():
-        checkbox.setChecked(direction.value == "up")
-    window.stage2_view._on_start_direction()
+    window.stage2_view._on_start_direction(TravelDirection.UP)
     app.processEvents()
     assert vm.state_machine.phase == Phase.OUTBOUND
 
@@ -86,13 +85,14 @@ def main() -> None:
     vm.mark_returned_to_origin()
     app.processEvents()
 
-    assert vm.state_machine.phase == Phase.INSPECTION_DONE
+    # start_direction()은 자유 순서 모드로 전환되어 계획된 4방향(기본값)이 모두 끝나야
+    # INSPECTION_DONE이 되므로, 이 스모크 테스트(상 방향 1개만 검증)에서는 DIRECTION_DONE까지만 확인.
+    assert vm.state_machine.phase == Phase.DIRECTION_DONE
     result = vm.state_machine.direction_results[-1]
     print(f"방향={result.direction}, 판정={result.verdict}")
     for check in result.check_results:
         print(f"  {check.check_type.value}: {check.status.value} (측정값={check.measured_value})")
-    print(f"전체 판정: {vm.state_machine.overall_verdict}")
-    print(f"결과 목록 UI 항목 수: {window.stage2_view.results_list.count()}")
+    print(f"종합 결과 표 - 상 방향 이동량 칸: {window.stage2_view.results_table.item(0, 1).text()}")
     print("스모크 테스트 통과" if result.verdict.value == "합격" else "스모크 테스트 실패 (판정 불량)")
 
 
