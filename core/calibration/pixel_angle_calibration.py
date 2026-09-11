@@ -186,12 +186,22 @@ class PixelAngleCalibration:
             self.profile.px_per_moa_y = px_per_moa
         return True
 
-    # ---- 수동 보정: 화살표 미세조정 (1px 단위) ----
+    # ---- 수동 보정: 화살표 미세조정 (기본 0.5px 단위) ----
     def nudge_origin(self, dx_px: float = 0.0, dy_px: float = 0.0) -> None:
         if self.profile is None:
             raise RuntimeError("먼저 seed_from_auto_detection()으로 초기값을 설정하세요.")
         self.profile.origin_px_x += dx_px
         self.profile.origin_px_y += dy_px
+
+    # ---- 수동 보정: 눈금 간격(px-per-MOA) 미세조정 (기본 0.01 단위) ----
+    def nudge_scale(self, delta_x: float = 0.0, delta_y: float = 0.0) -> None:
+        """작업자가 화면에서 먼 지점(예: 35MOA 근처)의 실측 눈금과 비교해가며 px_per_moa를
+        직접 미세조정할 때 사용 - refine_scale()의 자동 추정이 신뢰하기 어려운 상황(예: 조명이
+        비대칭이라 한쪽 tick이 잘 안 보이는 경우)에 사람이 눈으로 보면서 최종 확정하는 용도."""
+        if self.profile is None:
+            raise RuntimeError("먼저 seed_from_auto_detection()으로 초기값을 설정하세요.")
+        self.profile.px_per_moa_x += delta_x
+        self.profile.px_per_moa_y += delta_y
 
     # ---- 변환 ----
     def to_moa(self, px_point: tuple[float, float]) -> tuple[float, float]:

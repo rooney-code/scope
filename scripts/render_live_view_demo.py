@@ -29,10 +29,16 @@ ORIGINALS_DIR = Path(__file__).resolve().parent.parent / "tests" / "test_images"
 RESULTS_DIR = Path(__file__).resolve().parent.parent / "tests" / "test_images" / "results"
 
 BRIGHT_CALIBRATION_IMAGE = "조리개최대.jpg"
-# "+10MRAD" tick의 실측 픽셀 위치(연결요소 분석으로 측정, docs/detection_notes.md 참고).
-# px_per_moa_y는 y축 tick을 별도로 정밀 측정하지 못해 x축과 동일하다고 가정한 근사치 -
-# 실제 프로그램에서는 캘리브레이션 화면에서 y축도 별도로 클릭 스냅해 정확히 잡아야 한다.
-DEMO_10MRAD_TICK_X_PX = 1921.0
+
+# 아래 값은 자동 추정(snap_tick 1점 + refine_scale 다중눈금 최소자승) 결과를 시작점으로,
+# 고해상도 원본 사진에서 ±35MOA 양끝 눈금을 사람이 직접 눈으로 대조하며 화살표(0.5px)/
+# 스케일(0.01) 미세조정으로 최종 확정한 값이다(사용자 확인 완료, 2026-09-11). 이 사진은
+# 좌우 조명이 비대칭이라(오른쪽 눈금은 뚜렷, 왼쪽은 흐릿) 자동 추정만으로는 35MOA 근처의
+# 오차를 완전히 없애지 못했음 - PixelAngleCalibration.nudge_origin()/nudge_scale()로
+# 사람이 최종 확정하는 것이 실제 운영 절차임을 보여주는 예시이기도 하다.
+# 자동 추정 대비 조정량: 원점 +2.216px(우측), px_per_moa 9.29 -> 9.35 (X/Y 동일 적용).
+CONFIRMED_PX_PER_MOA = 9.35
+CONFIRMED_ORIGIN_NUDGE_PX = 2.216
 
 RED_DOT_IMAGES = ["8단계.jpg", "좌하단_7단계.jpg", "7단계_원점근처.jpg"]
 
@@ -48,20 +54,13 @@ def main() -> None:
 
     calibration = PixelAngleCalibration()
     calibration.seed_from_auto_detection("DEMO-CAM", grid_result)
-    calibration.snap_tick(tick_px=DEMO_10MRAD_TICK_X_PX, known_value=10.0, unit="mrad", axis="x")
-    calibration.profile.px_per_moa_y = calibration.profile.px_per_moa_x  # y축 근사치(주석 참고)
-    print(f"[캘리브레이션] 클릭 스냅(1점) px_per_moa: {calibration.profile.px_per_moa_x:.3f}")
-
-    # 클릭 1점 스냅은 먼 지점(35MOA 근처)일수록 오차가 확대되어 보이는 문제가 있었음(실측
-    # 확인) - 원점 주변 보조눈금(1MOA 간격) 다수를 정밀 측정해 최소자승으로 재보정한다.
-    gray_bright = cv2.cvtColor(bright, cv2.COLOR_BGR2GRAY)
-    for axis in ("x", "y"):
-        ok = calibration.refine_scale(gray_bright, axis=axis)
-        px_per_moa = calibration.profile.px_per_moa_x if axis == "x" else calibration.profile.px_per_moa_y
-        print(
-            f"[캘리브레이션] 정밀 보정({axis}축): 성공={ok}, "
-            f"사용된 보조눈금 개수={calibration.last_refine_tick_count}, px_per_moa={px_per_moa:.4f}"
-        )
+    calibration.profile.px_per_moa_x = CONFIRMED_PX_PER_MOA
+    calibration.profile.px_per_moa_y = CONFIRMED_PX_PER_MOA
+    calibration.nudge_origin(dx_px=CONFIRMED_ORIGIN_NUDGE_PX)
+    print(
+        f"[캘리브레이션] 최종 확정값 적용: origin={calibration.profile.origin_px_x:.3f}, "
+        f"px_per_moa={calibration.profile.px_per_moa_x:.3f}"
+    )
 
     detector = RedDotDetector(DetectionSettings())
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)

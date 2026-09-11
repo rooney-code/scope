@@ -3,6 +3,7 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+import pytest
 
 from core.calibration.grid_auto_detector import GridAutoDetector
 from core.calibration.pixel_angle_calibration import PixelAngleCalibration
@@ -134,6 +135,32 @@ def test_refine_scale_corrects_single_point_snap_error():
     assert abs(calib.profile.px_per_moa_x - true_px_per_unit) < 0.05
     # 초기값(9.4)보다 참값(9.1)에 훨씬 가까워졌는지 확인
     assert abs(calib.profile.px_per_moa_x - true_px_per_unit) < abs(9.4 - true_px_per_unit)
+
+
+def test_nudge_scale_adjusts_px_per_moa_directly():
+    """작업자가 눈으로 보며 눈금 간격(px-per-MOA)을 직접 미세조정하는 기능 - refine_scale()의
+    자동 추정을 믿기 어려운 상황(조명 비대칭 등, 실측으로 확인됨)에서 사람이 최종 확정하는
+    용도. 원점은 건드리지 않고 px_per_moa만 더해져야 한다."""
+    calib = PixelAngleCalibration()
+    from core.calibration.grid_auto_detector import GridDetectionResult
+
+    calib.seed_from_auto_detection("CAM-NUDGE", GridDetectionResult(found=True, origin_px=(500.0, 300.0)))
+    calib.profile.px_per_moa_x = 9.29
+    calib.profile.px_per_moa_y = 9.29
+
+    calib.nudge_scale(delta_x=0.06, delta_y=-0.02)
+
+    assert abs(calib.profile.px_per_moa_x - 9.35) < 1e-9
+    assert abs(calib.profile.px_per_moa_y - 9.27) < 1e-9
+    # 원점은 그대로여야 함
+    assert calib.profile.origin_px_x == 500.0
+    assert calib.profile.origin_px_y == 300.0
+
+
+def test_nudge_scale_without_profile_raises():
+    calib = PixelAngleCalibration()
+    with pytest.raises(RuntimeError):
+        calib.nudge_scale(delta_x=0.01)
 
 
 def test_calibration_save_and_load_roundtrip():

@@ -95,18 +95,36 @@ class CalibrationView(QWidget):
         snap_layout.addWidget(self.snap_click_label, 2, 0, 1, 3)
         snap_layout.addWidget(snap_apply_btn, 3, 0, 1, 3)
 
-        # 화살표 미세조정
-        nudge_group = QGroupBox("원점 미세조정 (1px)")
+        # 화살표 미세조정: 원점(0.5px 단위)
+        ORIGIN_NUDGE_STEP_PX = 0.5
+        nudge_group = QGroupBox(f"원점 미세조정 ({ORIGIN_NUDGE_STEP_PX}px)")
         up_btn, down_btn, left_btn, right_btn = (QPushButton(s) for s in ("↑", "↓", "←", "→"))
-        up_btn.clicked.connect(lambda: self._on_nudge(0, -1))
-        down_btn.clicked.connect(lambda: self._on_nudge(0, 1))
-        left_btn.clicked.connect(lambda: self._on_nudge(-1, 0))
-        right_btn.clicked.connect(lambda: self._on_nudge(1, 0))
+        up_btn.clicked.connect(lambda: self._on_nudge(0, -ORIGIN_NUDGE_STEP_PX))
+        down_btn.clicked.connect(lambda: self._on_nudge(0, ORIGIN_NUDGE_STEP_PX))
+        left_btn.clicked.connect(lambda: self._on_nudge(-ORIGIN_NUDGE_STEP_PX, 0))
+        right_btn.clicked.connect(lambda: self._on_nudge(ORIGIN_NUDGE_STEP_PX, 0))
         nudge_layout = QGridLayout(nudge_group)
         nudge_layout.addWidget(up_btn, 0, 1)
         nudge_layout.addWidget(left_btn, 1, 0)
         nudge_layout.addWidget(right_btn, 1, 2)
         nudge_layout.addWidget(down_btn, 2, 1)
+
+        # 눈금 간격(px-per-MOA) 미세조정: 0.01 단위, X/Y 축 각각
+        # (원점 근처는 잘 맞아도 35MOA 같은 먼 지점에서만 벌어지는 경우가 있어 - 실측으로
+        # 확인된 문제 - refine_scale() 자동 추정과 별개로 눈으로 보며 최종 확정하는 용도)
+        SCALE_NUDGE_STEP = 0.01
+        scale_group = QGroupBox(f"눈금 간격(px/MOA) 미세조정 ({SCALE_NUDGE_STEP})")
+        x_minus_btn, x_plus_btn = QPushButton("X −"), QPushButton("X +")
+        y_minus_btn, y_plus_btn = QPushButton("Y −"), QPushButton("Y +")
+        x_minus_btn.clicked.connect(lambda: self._on_nudge_scale(-SCALE_NUDGE_STEP, 0))
+        x_plus_btn.clicked.connect(lambda: self._on_nudge_scale(SCALE_NUDGE_STEP, 0))
+        y_minus_btn.clicked.connect(lambda: self._on_nudge_scale(0, -SCALE_NUDGE_STEP))
+        y_plus_btn.clicked.connect(lambda: self._on_nudge_scale(0, SCALE_NUDGE_STEP))
+        scale_layout = QGridLayout(scale_group)
+        scale_layout.addWidget(x_minus_btn, 0, 0)
+        scale_layout.addWidget(x_plus_btn, 0, 1)
+        scale_layout.addWidget(y_minus_btn, 1, 0)
+        scale_layout.addWidget(y_plus_btn, 1, 1)
 
         save_btn = QPushButton("저장")
         save_btn.clicked.connect(self._on_save)
@@ -117,6 +135,7 @@ class CalibrationView(QWidget):
         controls.addWidget(auto_btn)
         controls.addWidget(snap_group)
         controls.addWidget(nudge_group)
+        controls.addWidget(scale_group)
         controls.addLayout(self._hbox(save_btn, load_btn))
         controls.addWidget(self.status_label)
         controls.addStretch(1)
@@ -187,6 +206,14 @@ class CalibrationView(QWidget):
         self.calibration.nudge_origin(dx, dy)
         p = self.calibration.profile
         self.status_label.setText(f"원점 조정: ({p.origin_px_x:.1f}, {p.origin_px_y:.1f})")
+
+    def _on_nudge_scale(self, delta_x: float, delta_y: float) -> None:
+        if self.calibration.profile is None:
+            self.status_label.setText("먼저 자동 검출을 실행하세요.")
+            return
+        self.calibration.nudge_scale(delta_x, delta_y)
+        p = self.calibration.profile
+        self.status_label.setText(f"눈금 간격 조정: px_per_moa=({p.px_per_moa_x:.3f}, {p.px_per_moa_y:.3f})")
 
     def _on_save(self) -> None:
         if self.calibration.profile is None:
