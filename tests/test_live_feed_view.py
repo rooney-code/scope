@@ -138,7 +138,7 @@ def test_calibration_mode_click_maps_back_to_original_frame_coords():
     frame = np.zeros((1000, 2000, 3), dtype=np.uint8)  # 캘리브레이션 없이도(원점 미지정) 동작
     view.on_frame(frame)  # display = 800x400, transform=(0,0,0.4)
 
-    view._image_label.resize(1600, 1600)  # 라벨이 정사각형이라 letterbox(상하 여백)가 생김
+    view._image_label.setFixedSize(1600, 1600)  # 라벨이 정사각형이라 letterbox(상하 여백)가 생김
 
     received: list[tuple[float, float]] = []
     view.frame_clicked_px.connect(lambda x, y: received.append((x, y)))

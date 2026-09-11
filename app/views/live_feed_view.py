@@ -61,12 +61,22 @@ class LiveFeedView(QWidget):
 
         self._image_label = _ClickableImageLabel("카메라 대기 중...")
         self._image_label.setAlignment(Qt.AlignCenter)
-        # 영상이 거의 정사각(3088x2076)이라 표시 영역도 정사각에 가깝게, 기본값을 충분히
-        # 크게(960x960) 잡는다 - QLabel 기본 사이즈 정책(Preferred)은 레이아웃에서 남는
-        # 공간을 스스로 차지하지 않으므로 Expanding으로 바꿔 창 크기에 맞춰 커지게 한다.
-        self._image_label.setMinimumSize(960, 960)
-        self._image_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self._image_label.setMinimumSize(200, 200)
         self._image_label.clicked.connect(self._on_image_clicked)
+
+        # 영상이 거의 정사각(3088x2076)이라 표시 영역도 정사각으로 강제한다. QLabel의
+        # Qt.KeepAspectRatio는 "그 안의 pixmap"만 비율을 지키는 것이라, 라벨 자체가
+        # 좌우로 넓은 직사각형으로 배치되면 위아래로 여백만 큰 작은 정사각형이 되어 버림
+        # (실측 확인). 그래서 라벨을 감싸는 컨테이너에 stretch=1을 줘 남는 공간을 전부
+        # 차지하게 하고, resizeEvent에서 그 컨테이너의 짧은 쪽 길이로 라벨을 정사각
+        # 고정크기로 강제한다.
+        self._image_container = QWidget()
+        image_container_layout = QHBoxLayout(self._image_container)
+        image_container_layout.setContentsMargins(0, 0, 0, 0)
+        image_container_layout.addStretch(1)
+        image_container_layout.addWidget(self._image_label)
+        image_container_layout.addStretch(1)
+        self._image_container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
         self._zoom_slider = QSlider(Qt.Horizontal)
         self._zoom_slider.setRange(1, 5)
@@ -87,13 +97,24 @@ class LiveFeedView(QWidget):
         zoom_row.addWidget(self._grid_checkbox)
 
         layout = QVBoxLayout(self)
-        layout.addWidget(self._image_label)
+        layout.addWidget(self._image_container, stretch=1)
         layout.addLayout(zoom_row)
         layout.addWidget(self._offset_label)
 
         self._last_frame: np.ndarray | None = None
         self._last_detection: DetectionResult | None = None
         self._zoom_level = 1  # 1~5, 커질수록 view_range_moa가 좁아짐(더 확대)
+        self._relayout_square_image()
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 - Qt override
+        super().resizeEvent(event)
+        self._relayout_square_image()
+
+    def _relayout_square_image(self) -> None:
+        side = max(200, min(self._image_container.width(), self._image_container.height()))
+        self._image_label.setFixedSize(side, side)
+        if self._last_frame is not None:
+            self._render(self._last_frame, self._last_detection)
 
     def set_calibration(self, calibration: PixelAngleCalibration) -> None:
         self._calibration = calibration
