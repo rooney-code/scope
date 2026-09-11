@@ -26,8 +26,9 @@ def test_without_calibration_returns_frame_unchanged():
     frame = np.zeros((2160, 3840, 3), dtype=np.uint8)  # 4K 프레임 시뮬레이션
     frame[100, 200] = [1, 2, 3]  # 좌상단 근처 마커
 
-    out = view._crop_around_origin(frame)
+    out, transform = view._crop_and_resize_around_origin(frame, None)
 
+    assert transform is None
     assert out.shape == frame.shape
     assert list(out[100, 200]) == [1, 2, 3]  # 원본 그대로(크롭 안 됨)
 
@@ -47,19 +48,43 @@ def test_crop_is_centered_on_origin_not_frame_center():
     ox, oy = int(origin_px[0]), int(origin_px[1])
     frame[oy, ox] = [10, 20, 30]  # 원점 위치에 마커
 
-    out = view._crop_around_origin(frame)
+    out, transform = view._crop_and_resize_around_origin(frame, calib.profile)
 
-    # 출력은 원본과 같은 크기로 리사이즈됨(디스플레이 편의) - 마커가 출력 이미지의
-    # 중앙 부근(가운데 크롭이었으므로)에 위치해야 함
+    assert transform is not None
+    # 원점 기준 ±45MOA(px_per_moa=6 -> ±270px)로 자른 정사각형 크롭이므로, 리사이즈해도
+    # 자기 자신의 가로세로 비율(1:1)을 유지해야 함(원본 프레임의 16:9 비율로 늘어나면 안 됨)
     out_h, out_w = out.shape[:2]
+    assert abs(out_w - out_h) <= 1  # 반올림 오차 허용
+
     ys, xs = np.where((out[..., 0] > 0))
     assert len(ys) > 0, "원점 마커가 크롭된 결과 안에 남아있어야 함"
     marker_y, marker_x = ys[0], xs[0]
 
-    # 리사이즈로 인해 정확히 중앙은 아니지만, 프레임 전체 중앙(1920,1080 스케일 기준)이
-    # 아니라 원점 근처(출력 이미지의 중앙 부근)에 있어야 함을 확인
+    # 마커(=원점)가 크롭 결과의 중앙 부근에 위치해야 함(가운데를 기준으로 잘랐으므로)
     assert abs(marker_x - out_w / 2) < out_w * 0.1
     assert abs(marker_y - out_h / 2) < out_h * 0.1
+
+
+def test_crop_preserves_aspect_ratio_for_non_square_view_range():
+    """px_per_moa_x와 px_per_moa_y가 다르면 크롭 영역이 정사각형이 아닐 수 있는데, 이때도
+    강제로 정사각형이나 원본 프레임 비율로 왜곡하지 않고 크롭 자신의 비율을 유지해야 한다."""
+    calib = PixelAngleCalibration()
+    from core.calibration.grid_auto_detector import GridDetectionResult
+
+    calib.seed_from_auto_detection("CAM", GridDetectionResult(found=True, origin_px=(500.0, 500.0)))
+    calib.profile.px_per_moa_x = 10.0
+    calib.profile.px_per_moa_y = 4.0  # x축과 y축 스케일이 다름 -> 크롭이 가로로 긴 직사각형
+
+    view = LiveFeedView(default_view_range_moa=20.0)
+    view.set_calibration(calib)
+
+    frame = np.zeros((1000, 1000, 3), dtype=np.uint8)
+    out, transform = view._crop_and_resize_around_origin(frame, calib.profile)
+
+    assert transform is not None
+    out_h, out_w = out.shape[:2]
+    expected_ratio = (20.0 * 10.0) / (20.0 * 4.0)  # crop_w / crop_h
+    assert (out_w / out_h) == pytest.approx(expected_ratio, rel=0.02)
 
 
 def test_zoom_level_narrows_view_range():

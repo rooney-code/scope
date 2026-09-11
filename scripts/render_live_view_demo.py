@@ -19,7 +19,7 @@ import cv2
 from PySide6.QtWidgets import QApplication
 
 from app.views.live_feed_view import LiveFeedView
-from core.calibration.grid_auto_detector import GridDetectionResult
+from core.calibration.grid_auto_detector import GridAutoDetector
 from core.calibration.pixel_angle_calibration import PixelAngleCalibration
 from core.config.settings import DetectionSettings
 from core.vision.blob_tracker import BlobTracker
@@ -28,20 +28,29 @@ from core.vision.red_dot_detector import RedDotDetector
 ORIGINALS_DIR = Path(__file__).resolve().parent.parent / "tests" / "test_images" / "originals"
 RESULTS_DIR = Path(__file__).resolve().parent.parent / "tests" / "test_images" / "results"
 
-# 이 저장소의 예시 사진(조리개최대.jpg)을 기준으로 측정한 임시 캘리브레이션 값 (데모 전용).
-DEMO_ORIGIN_PX = (1604.7, 680.7)
-DEMO_PX_PER_MOA = 9.2
+BRIGHT_CALIBRATION_IMAGE = "조리개최대.jpg"
+# "+10MRAD" tick의 실측 픽셀 위치(연결요소 분석으로 측정, docs/detection_notes.md 참고).
+# px_per_moa_y는 y축 tick을 별도로 정밀 측정하지 못해 x축과 동일하다고 가정한 근사치 -
+# 실제 프로그램에서는 캘리브레이션 화면에서 y축도 별도로 클릭 스냅해 정확히 잡아야 한다.
+DEMO_10MRAD_TICK_X_PX = 1921.0
 
-RED_DOT_IMAGES = ["8단계.jpg", "좌하단_7단계.jpg"]
+RED_DOT_IMAGES = ["8단계.jpg", "좌하단_7단계.jpg", "7단계_원점근처.jpg"]
 
 
 def main() -> None:
     app = QApplication.instance() or QApplication(sys.argv)
 
+    bright = cv2.imread(str(ORIGINALS_DIR / BRIGHT_CALIBRATION_IMAGE))
+    grid_result = GridAutoDetector().detect(bright)
+    if not grid_result.found:
+        raise RuntimeError("그리드 원점 자동검출 실패 - 조리개최대.jpg를 확인하세요.")
+    print(f"[캘리브레이션] 자동검출 원점: {grid_result.origin_px}")
+
     calibration = PixelAngleCalibration()
-    calibration.seed_from_auto_detection("DEMO-CAM", GridDetectionResult(found=True, origin_px=DEMO_ORIGIN_PX))
-    calibration.profile.px_per_moa_x = DEMO_PX_PER_MOA
-    calibration.profile.px_per_moa_y = DEMO_PX_PER_MOA
+    calibration.seed_from_auto_detection("DEMO-CAM", grid_result)
+    calibration.snap_tick(tick_px=DEMO_10MRAD_TICK_X_PX, known_value=10.0, unit="mrad", axis="x")
+    calibration.profile.px_per_moa_y = calibration.profile.px_per_moa_x  # y축 근사치(주석 참고)
+    print(f"[캘리브레이션] px_per_moa: {calibration.profile.px_per_moa_x:.3f}")
 
     detector = RedDotDetector(DetectionSettings())
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)

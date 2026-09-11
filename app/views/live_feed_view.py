@@ -1,4 +1,4 @@
-"""카메라 프리뷰 + 오버레이(레드닷 검출 형상) 위젯.
+"""카메라 프리뷰 + 오버레이(원점, 레드닷 중심, 선택적 격자) 위젯.
 
 카메라 해상도는 4K 이상이지만 화면(FHD)에 그대로 축소해서 보여주면 레드닷/눈금 같은 작은
 디테일이 뭉개진다. 또한 원점(크로스헤어 교차점)은 카메라 설치 상태에 따라 이미지 중앙이
@@ -7,6 +7,11 @@
   - 자르는 범위는 화면 비율(%)이 아니라 **MOA 단위**로 지정한다(트래블 검사가 35MOA까지
     다루므로 여유를 둔 기본값 45MOA 반경을 보여줌). 확대 슬라이더는 이 기본 범위를 더
     좁히는 배율로 동작한다.
+  - 자른 영역은 **자기 자신의 가로세로 비율을 유지**한 채로만 리사이즈한다(원본 프레임의
+    가로세로 비율로 강제로 맞추면 좌우가 늘어나 보이는 왜곡이 생김 - 실측으로 확인된 버그).
+  - 원점/레드닷 마커, 격자 오버레이는 모두 **자르고 리사이즈까지 끝난 최종 화면 좌표계**에서
+    그린다. 원본 해상도에서 그린 뒤 리사이즈하면 1px 두께 선이 보간 과정에서 위치에 따라
+    보였다 안 보였다 하는 문제가 있었음(실측으로 확인된 버그).
 캘리브레이션이 아직 없으면(원점을 모르는 상태) 원본 프레임을 그대로 보여준다.
 """
 from __future__ import annotations
@@ -18,15 +23,19 @@ from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import QCheckBox, QHBoxLayout, QLabel, QSlider, QVBoxLayout, QWidget
 
 from core.calibration.grid_overlay import draw_moa_grid_overlay
-from core.calibration.pixel_angle_calibration import PixelAngleCalibration
+from core.calibration.pixel_angle_calibration import CalibrationProfile, PixelAngleCalibration
 from core.vision.red_dot_detector import DetectionResult
+
+_ORIGIN_MARKER_COLOR_BGR = (255, 200, 0)  # 하늘색 계열 - 레드닷(빨강)과 구분되게
+_RED_DOT_MARKER_COLOR_BGR = (0, 0, 255)  # 레드닷 중심 표시: 빨간 점 하나
 
 
 class LiveFeedView(QWidget):
-    def __init__(self, default_view_range_moa: float = 45.0, parent=None) -> None:
+    def __init__(self, default_view_range_moa: float = 45.0, display_target_size: int = 1600, parent=None) -> None:
         super().__init__(parent)
         self._calibration: PixelAngleCalibration | None = None
         self._default_view_range_moa = default_view_range_moa
+        self._display_target_size = display_target_size
 
         self._image_label = QLabel("카메라 대기 중...")
         self._image_label.setAlignment(Qt.AlignCenter)
@@ -99,33 +108,30 @@ class LiveFeedView(QWidget):
             self._render(self._last_frame, result)
 
     def _render(self, frame_bgr: np.ndarray, detection: DetectionResult | None) -> None:
-        display = frame_bgr.copy()
         profile = self._calibration.profile if self._calibration is not None else None
 
-        # 격자형 그리드(1MOA 간격, 사용자 선택으로 켜고 끔) - 원본 프레임 좌표계 기준으로
-        # 원점/스케일에 맞춰 그린 뒤 아래에서 함께 크롭한다.
-        if self._grid_overlay_enabled and profile is not None:
+        display, transform = self._crop_and_resize_around_origin(frame_bgr, profile)
+        display_profile = self._transform_profile(profile, transform)
+
+        if self._grid_overlay_enabled and display_profile is not None:
             display = draw_moa_grid_overlay(
                 display,
-                profile,
+                display_profile,
                 moa_step=self._current_grid_step_moa(),
                 thickness=1,
                 max_moa_range=self._current_view_range_moa(),
             )
 
-        # 원점: 작은 마커만 표시 (긴 십자선은 그리지 않음)
-        if profile is not None:
-            ox, oy = int(round(profile.origin_px_x)), int(round(profile.origin_px_y))
-            cv2.drawMarker(display, (ox, oy), (0, 0, 255), cv2.MARKER_CROSS, 16, 1)
-            cv2.circle(display, (ox, oy), 5, (0, 0, 255), 1)
+        # 원점: 작은 마커만 표시 (긴 십자선은 그리지 않음, 레드닷과 다른 색으로 구분)
+        if display_profile is not None:
+            ox, oy = int(round(display_profile.origin_px_x)), int(round(display_profile.origin_px_y))
+            cv2.drawMarker(display, (ox, oy), _ORIGIN_MARKER_COLOR_BGR, cv2.MARKER_CROSS, 14, 2)
 
-        # 레드닷: 검출된 중심점만 작은 점으로 표시 (윤곽선 아님 - 중심 위치 확인이 목적)
+        # 레드닷: 검출된 중심점을 빨간 점 하나로만 표시
         if detection is not None and detection.found:
-            dx, dy = int(round(detection.center_px[0])), int(round(detection.center_px[1]))
-            cv2.circle(display, (dx, dy), 4, (0, 255, 0), -1)
-            cv2.circle(display, (dx, dy), 8, (0, 255, 0), 1)
+            dx, dy = self._transform_point(detection.center_px, transform)
+            cv2.circle(display, (int(round(dx)), int(round(dy))), 4, _RED_DOT_MARKER_COLOR_BGR, -1)
 
-        display = self._crop_around_origin(display)
         self._draw_offset_text(display, detection, profile)
 
         rgb = cv2.cvtColor(display, cv2.COLOR_BGR2RGB)
@@ -140,7 +146,10 @@ class LiveFeedView(QWidget):
     def _draw_offset_text(
         self, display: np.ndarray, detection: DetectionResult | None, profile
     ) -> None:
-        """레드닷이 원점 기준 좌우/상하로 몇 MOA 벗어나 있는지 화면 좌하단에 표시."""
+        """레드닷이 원점 기준 좌우/상하로 몇 MOA 벗어나 있는지 화면 좌하단에 표시.
+
+        cv2.putText는 한글 글리프가 없어 깨지므로 영문 라벨(R/L/U/D)만 사용한다.
+        """
         if detection is None or not detection.found or profile is None or self._calibration is None:
             self._offset_label.setText("레드닷 오차: -")
             return
@@ -167,30 +176,71 @@ class LiveFeedView(QWidget):
         )
         self._offset_label.setText(f"레드닷 오차: {text}")
 
-    def _crop_around_origin(self, frame: np.ndarray) -> np.ndarray:
+    def _crop_and_resize_around_origin(
+        self, frame: np.ndarray, profile: CalibrationProfile | None
+    ) -> tuple[np.ndarray, tuple[float, float, float] | None]:
         """캘리브레이션된 원점을 중심으로 ±view_range_moa 영역만 원본 해상도로 잘라낸다.
 
         캘리브레이션이 아직 없으면(원점 위치를 모름) 원본 프레임을 그대로 반환한다 - 원점을
         모르는 상태에서 프레임 중앙을 임의로 원점처럼 취급하면 실제 설치 상태와 맞지 않는
         위치를 보여주게 되므로 절대 하지 않는다.
+
+        반환값: (표시용 이미지, transform). transform은 (x0, y0, scale) - 원본 프레임 좌표
+        (px, py)를 표시용 좌표로 변환하려면 ((px-x0)*scale, (py-y0)*scale). 크롭이 적용되지
+        않았으면 transform은 None(=원본 좌표를 그대로 사용).
         """
-        if self._calibration is None or self._calibration.profile is None:
-            return frame
+        if profile is None:
+            return frame, None
 
         h, w = frame.shape[:2]
-        p = self._calibration.profile
         view_range_moa = self._current_view_range_moa()
 
-        half_w_px = view_range_moa * p.px_per_moa_x
-        half_h_px = view_range_moa * p.px_per_moa_y
+        half_w_px = view_range_moa * profile.px_per_moa_x
+        half_h_px = view_range_moa * profile.px_per_moa_y
 
-        x0 = int(max(0, p.origin_px_x - half_w_px))
-        x1 = int(min(w, p.origin_px_x + half_w_px))
-        y0 = int(max(0, p.origin_px_y - half_h_px))
-        y1 = int(min(h, p.origin_px_y + half_h_px))
+        x0 = int(max(0, profile.origin_px_x - half_w_px))
+        x1 = int(min(w, profile.origin_px_x + half_w_px))
+        y0 = int(max(0, profile.origin_px_y - half_h_px))
+        y1 = int(min(h, profile.origin_px_y + half_h_px))
 
         if x1 <= x0 or y1 <= y0:
-            return frame
+            return frame, None
 
         cropped = frame[y0:y1, x0:x1]
-        return cv2.resize(cropped, (w, h), interpolation=cv2.INTER_LINEAR)
+        crop_h, crop_w = cropped.shape[:2]
+
+        # 자기 자신의 가로세로 비율을 유지한 채로만 확대/축소 (원본 프레임 크기에 억지로
+        # 맞추면 좌우 또는 상하가 늘어나 보이는 왜곡이 생김)
+        scale = self._display_target_size / max(crop_w, crop_h)
+        new_w, new_h = max(1, int(round(crop_w * scale))), max(1, int(round(crop_h * scale)))
+        resized = cv2.resize(cropped, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+
+        return resized, (float(x0), float(y0), scale)
+
+    @staticmethod
+    def _transform_point(point_px: tuple[float, float], transform: tuple[float, float, float] | None) -> tuple[float, float]:
+        if transform is None:
+            return point_px
+        x0, y0, scale = transform
+        return (point_px[0] - x0) * scale, (point_px[1] - y0) * scale
+
+    @classmethod
+    def _transform_profile(
+        cls, profile: CalibrationProfile | None, transform: tuple[float, float, float] | None
+    ) -> CalibrationProfile | None:
+        """캘리브레이션 프로파일(원점+스케일)을 크롭/리사이즈 후의 표시 좌표계로 변환한
+        새 프로파일을 만든다 - 격자/원점 마커를 최종 화면 좌표계에서 그리기 위함."""
+        if profile is None:
+            return None
+        if transform is None:
+            return profile
+
+        ox, oy = cls._transform_point((profile.origin_px_x, profile.origin_px_y), transform)
+        scale = transform[2]
+        return CalibrationProfile(
+            camera_id=profile.camera_id,
+            origin_px_x=ox,
+            origin_px_y=oy,
+            px_per_moa_x=profile.px_per_moa_x * scale,
+            px_per_moa_y=profile.px_per_moa_y * scale,
+        )
