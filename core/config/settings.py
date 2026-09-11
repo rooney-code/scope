@@ -65,7 +65,9 @@ class DetectionSettings:
     # 참고: docs/detection_notes.md - 레드닷은 순수 빨강이 아니라 호박색(amber)에 가까움
     hsv_lower1: tuple[int, int, int] = (5, 80, 120)
     hsv_upper1: tuple[int, int, int] = (35, 255, 255)
-    hsv_lower2: tuple[int, int, int] = (0, 0, 0)
+    # 채도/명도 하한을 hsv_lower1과 동일하게 유지 - 0으로 두면 배경의 어둡고 무채색인 픽셀까지
+    # (hue만 우연히 0~4 범위인) 매칭되어 노이즈 블롭이 레드닷과 합쳐지는 문제가 있었음(실기 테스트로 확인)
+    hsv_lower2: tuple[int, int, int] = (0, 80, 120)
     hsv_upper2: tuple[int, int, int] = (4, 255, 255)
     min_blob_area: float = 15.0
     max_blob_jump_px: float = 60.0  # BlobTracker 게이팅, 현장 튜닝 필요

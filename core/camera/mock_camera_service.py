@@ -106,10 +106,12 @@ class MockCameraService(ICameraService):
 
         # 레드닷 (호박색, 중심 밝고 발광)
         dot = (int(self._dot_px[0]), int(self._dot_px[1]))
+        # 단일 블롭으로 단순화 (별도의 외곽 링을 그리면 특정 위치에서 내부 원과 분리된
+        # 컨투어로 잡혀 다중 블롭 아티팩트가 생기는 경우가 있어 제거함 - Mock 전용 이슈,
+        # 실제 검출 튜닝은 실기 영상으로 진행)
         if self._dot_elliptical:
             cv2.ellipse(frame, dot, (10, 6), 0, 0, 360, (40, 160, 230), -1)
         else:
             cv2.circle(frame, dot, 8, (40, 160, 230), -1)
-        cv2.circle(frame, dot, 14, (20, 100, 180), 2)
 
         return frame

@@ -33,6 +33,11 @@ class Phase(Enum):
 
 
 class TravelTestStateMachine:
+    # 카메라/픽셀 양자화로 인한 측정 잡음 보정용 - 판정 임계값(threshold_used로 기록되는 값)과는
+    # 무관한 순수 수치 안정성 여유값. 예: 35.0 목표에 34.997처럼 근소하게 못 미치는 것을
+    # 기계적 이동량 부족으로 오판하지 않기 위함.
+    MEASUREMENT_EPSILON_MOA = 0.1
+
     def __init__(self, settings: Stage2Settings, stability_detector_factory=None) -> None:
         self.settings = settings
         self._stability_factory = stability_detector_factory or (
@@ -156,7 +161,7 @@ class TravelTestStateMachine:
         s = self.settings
         checks: list[CheckResult] = []
 
-        travel_ok = self._max_primary_reached >= s.travel_target_moa
+        travel_ok = self._max_primary_reached >= s.travel_target_moa - self.MEASUREMENT_EPSILON_MOA
         checks.append(
             CheckResult(
                 check_type=CheckType.TRAVEL_AMOUNT,
