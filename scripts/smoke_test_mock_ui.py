@@ -54,17 +54,21 @@ def main() -> None:
 
     for direction, checkbox in window.stage2_view._direction_checks.items():
         checkbox.setChecked(direction.value == "up")
-    window.stage2_view._on_start()
+    window.stage2_view._on_start_direction()
     app.processEvents()
     assert vm.state_machine.phase == Phase.OUTBOUND
 
-    # 0 -> 35 MOA 점진 이동 (클릭 1회당 ~5moa 스텝, jump 게이팅 통과), 각 스텝에서 프레임 몇 장씩 주입
+    # 0 -> 35 MOA 점진 이동 (클릭 1회당 ~5moa 스텝, jump 게이팅 통과), 각 스텝에서 프레임 몇 장씩 주입.
+    # 실시간 하드웨어에서는 목표 근처에서 잠깐 멈추면 feed_position()이 자동으로 평가하지만,
+    # 이 스크립트는 프레임을 즉시(sleep 없이) 주입해 min_stable_duration_ms(실제 설정 150ms)를
+    # 절대 못 채우므로 자동 감지가 트리거되지 않는다 - 그래서 뷰모델의 수동 확정 API를 직접
+    # 호출해 같은 효과(이동량/쉬프트/드리프트 평가)를 낸다.
     for y in range(0, 36, 5):
         for _ in range(3):
             _push_frame_at(camera, vm, 0, y)
     app.processEvents()
 
-    window.stage2_view._on_far_point_reached()
+    vm.mark_far_point_reached()
     app.processEvents()
     if vm.state_machine.phase != Phase.RETURN:
         result = vm.state_machine.direction_results[-1]
@@ -79,7 +83,7 @@ def main() -> None:
             _push_frame_at(camera, vm, 0, y)
     app.processEvents()
 
-    window.stage2_view._on_returned_to_origin()
+    vm.mark_returned_to_origin()
     app.processEvents()
 
     assert vm.state_machine.phase == Phase.INSPECTION_DONE

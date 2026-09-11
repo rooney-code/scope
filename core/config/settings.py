@@ -85,7 +85,11 @@ class Stage2Settings:
     drift_threshold_moa: float = 2.5
     shift_threshold_moa: float = 2.5
     backlash_threshold_moa: float = 2.5
-    near_zero_band_moa: float = 1.0
+    # TravelTestStateMachine.feed_position()이 "원점 복귀를 마쳤다"고 자동 판단하는 근접
+    # 범위. 백래쉬 자체가 0에서 벗어난 잔류오차를 재는 값이라, 이 밴드가 backlash_threshold_moa
+    # 보다 좁으면 실제 백래쉬 불량(0에서 여러 MOA 떨어짐)을 자동으로 못 잡아낸다 - 이동 중간에
+    # 잠깐 멈추는 것과는 확실히 구분되면서도 불량 판정 범위는 덮도록 여유를 둔 값.
+    near_zero_band_moa: float = 5.0
     stop_on_failure_scope: str = "entire_inspection"  # "entire_inspection" | "direction_only"
 
 

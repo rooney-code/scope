@@ -14,7 +14,7 @@ from core.calibration.pixel_angle_calibration import PixelAngleCalibration
 from core.camera.camera_service import ICameraService
 from core.camera.frame_bus import FrameBus
 from core.config.settings import Settings
-from core.inspection.models import TravelDirection, Verdict
+from core.inspection.models import InspectionSession, TravelDirection, Verdict
 from core.inspection.travel_test_state_machine import Phase, TravelTestStateMachine
 from core.tracking.position_sample import PositionSample
 from core.vision.blob_tracker import BlobTracker
@@ -27,11 +27,13 @@ class InspectionViewModel(QObject):
     phase_changed = Signal(str)
     direction_completed = Signal(object)  # DirectionTestResult
     inspection_completed = Signal(str)  # overall verdict 문자열
+    inspection_finalized = Signal(str)  # "시험 종료" 버튼으로 DB 저장 완료 - overall verdict 문자열
 
-    def __init__(self, camera: ICameraService, settings: Settings, parent=None) -> None:
+    def __init__(self, camera: ICameraService, settings: Settings, repository=None, parent=None) -> None:
         super().__init__(parent)
         self.camera = camera
         self.settings = settings
+        self.repository = repository  # None이면 저장 없이 finalize()만 수행(하드웨어/DB 없는 개발 모드)
 
         self.frame_bus = FrameBus()
         self.detector = RedDotDetector(settings.detection)
@@ -89,6 +91,34 @@ class InspectionViewModel(QObject):
         self.state_machine.restart_all()
         self.phase_changed.emit(self.state_machine.phase.name)
 
+    def retest_direction(self, direction: TravelDirection) -> None:
+        """작업자의 조작 실수 등으로 특정 방향을 다시 시험하고 싶을 때 - 이전 기록은 즉시
+        사라지고(이력 보존 없음, 아직 DB에 저장 전이므로), 그 방향+아직 못한 방향들이 다시
+        큐에 들어가 이어서 진행된다."""
+        self.state_machine.retest_direction(direction)
+        self.phase_changed.emit(self.state_machine.phase.name)
+
+    @property
+    def is_ready_to_finalize(self) -> bool:
+        return self.state_machine.is_ready_to_finalize
+
+    def finalize_inspection(self) -> str:
+        """'시험 종료' 버튼 - 결과를 확정하고(이후 재시험 불가) repository가 있으면 DB에
+        저장한다. repository가 없으면(하드웨어/DB 미연결 개발 모드) 확정만 하고 넘어간다.
+        반환값: 최종 전체 판정 문자열."""
+        self.state_machine.finalize()
+        if self.repository is not None and self.scope_id:
+            session_id = self.repository.create_session(self.scope_id, operator="")
+            session = InspectionSession(
+                scope_id=self.scope_id,
+                direction_results=self.state_machine.direction_results,
+                overall_verdict=self.state_machine.overall_verdict,
+            )
+            self.repository.save_full_session(session, session_id)
+        overall_verdict = self.state_machine.overall_verdict.value
+        self.inspection_finalized.emit(overall_verdict)
+        return overall_verdict
+
     def _after_state_change(self) -> None:
         self.phase_changed.emit(self.state_machine.phase.name)
         if self.state_machine.direction_results:
@@ -111,4 +141,13 @@ class InspectionViewModel(QObject):
         if result.found and self.calibration.profile is not None:
             x_moa, y_moa = self.calibration.to_moa(result.center_px)
             sample = PositionSample(timestamp_s=time.time(), x_moa=x_moa, y_moa=y_moa)
+
+            # feed_position() 자체가 목표/원점 근처에서의 멈춤을 감지해 이동량/쉬프트/드리프트/
+            # 백래쉬 평가와 방향 전환("이동 완료"/"원점 복귀 완료" 버튼 없이)까지 자동으로
+            # 수행할 수 있으므로, 매 프레임 이후 상태가 실제로 바뀌었는지 확인해서 그때만
+            # 시그널을 내보낸다(매 프레임 emit하면 UI에 불필요한 갱신이 계속 발생함).
+            phase_before = self.state_machine.phase
+            result_count_before = len(self.state_machine.direction_results)
             self.state_machine.feed_position(sample)
+            if self.state_machine.phase != phase_before or len(self.state_machine.direction_results) != result_count_before:
+                self._after_state_change()

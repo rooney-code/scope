@@ -75,7 +75,7 @@
     "drift_threshold_moa": 2.5,
     "shift_threshold_moa": 2.5,
     "backlash_threshold_moa": 2.5,
-    "near_zero_band_moa": 1.0,
+    "near_zero_band_moa": 5.0,
     "stop_on_failure_scope": "entire_inspection"
   },
   "stability": {

@@ -17,7 +17,7 @@ def _make_machine(**overrides):
         drift_threshold_moa=2.5,
         shift_threshold_moa=2.5,
         backlash_threshold_moa=2.5,
-        near_zero_band_moa=1.0,
+        near_zero_band_moa=5.0,
         stop_on_failure_scope="entire_inspection",
     )
     for k, v in overrides.items():
@@ -41,24 +41,22 @@ def _feed_hold(machine, x, y, n, t0, dt=0.02):
     return t
 
 
-def test_up_direction_full_pass():
+def test_up_direction_full_pass_auto_detected_without_buttons():
+    """'이동 완료'/'원점 복귀 완료' 버튼 없이, 목표/원점 근처에서 잠깐 멈추는 것만으로
+    자동 평가되어야 한다 (실제 작업자가 하던 방식 그대로: 이동 -> 눈금 확인(멈춤) -> 후진)."""
     m = _make_machine()
     m.configure([TravelDirection.UP])
     assert m.start_next_direction() == TravelDirection.UP
     assert m.phase == Phase.OUTBOUND
 
-    # 0 -> 35 MOA (y축), cross(x)는 0 유지
+    # 0 -> 35 MOA (y축), cross(x)는 0 유지, 목표 근처에서 멈춤 -> 자동으로 이동량/쉬프트/드리프트 평가
     t = _feed_ramp(m, x_values=[0] * 8, y_values=[i * 5 for i in range(8)])  # 0,5,...,35
-    t = _feed_hold(m, x=0, y=35, n=6, t0=t)  # 안정화 -> 드리프트 캡처
+    t = _feed_hold(m, x=0, y=35, n=6, t0=t)
+    assert m.phase == Phase.RETURN  # 버튼 없이 자동 전환됨
 
-    m.mark_far_point_reached()
-    assert m.phase == Phase.RETURN
-
-    # 복귀: 35 -> 0
+    # 복귀: 35 -> 0, 원점 근처에서 멈춤 -> 자동으로 백래쉬 평가 + 방향 종료
     t = _feed_ramp(m, x_values=[0] * 8, y_values=[35 - i * 5 for i in range(8)])
-    t = _feed_hold(m, x=0, y=0, n=6, t0=t)
-
-    m.mark_returned_to_origin()
+    _feed_hold(m, x=0, y=0, n=6, t0=t)
 
     assert m.phase == Phase.INSPECTION_DONE
     assert m.overall_verdict == Verdict.PASS
@@ -69,15 +67,38 @@ def test_up_direction_full_pass():
     assert all(c.status == Verdict.PASS for c in result.check_results)
 
 
-def test_travel_amount_shortfall_fails_immediately():
+def test_pausing_mid_route_does_not_trigger_evaluation():
+    """목표(35MOA)에 도달하기 전에 잠깐 멈추는 것(예: 손 고쳐잡기)은 평가 트리거로 치지 않고
+    무시해야 한다 - 그렇지 않으면 아직 이동 중인데 이동량 미달로 오판된다."""
+    m = _make_machine()
+    m.configure([TravelDirection.UP])
+    m.start_next_direction()
+
+    t = _feed_ramp(m, x_values=[0] * 4, y_values=[0, 5, 10, 15])
+    t = _feed_hold(m, x=0, y=15, n=6, t0=t)  # 15MOA에서 멈춤 - 아직 목표(35) 못 미침
+
+    assert m.phase == Phase.OUTBOUND  # 자동 평가 트리거 안 됨, 계속 진행 중
+    assert m.direction_results == []
+
+    # 계속 이동해서 목표까지 도달하면 그제서야 평가됨
+    t = _feed_ramp(m, x_values=[0] * 4, y_values=[20, 25, 30, 35], t0=t)
+    _feed_hold(m, x=0, y=35, n=6, t0=t)
+    assert m.phase == Phase.RETURN
+
+
+def test_travel_amount_shortfall_requires_manual_confirmation():
+    """기계적 한계로 목표(35)에 못 미치는 경우, 그 지점에서 멈춰도 자동으로는 평가되지 않는다
+    (목표 근처가 아니므로) - 작업자가 "여기까지가 한계"라고 mark_far_point_reached()를 수동
+    호출해야 한다."""
     m = _make_machine()
     m.configure([TravelDirection.UP])
     m.start_next_direction()
 
     t = _feed_ramp(m, x_values=[0] * 6, y_values=[0, 5, 10, 15, 20, 25])  # 목표(35) 미달
     _feed_hold(m, x=0, y=25, n=6, t0=t)
+    assert m.phase == Phase.OUTBOUND  # 자동 트리거 안 됨
 
-    m.mark_far_point_reached()
+    m.mark_far_point_reached()  # 수동 확정
 
     assert m.phase == Phase.INSPECTION_DONE
     result = m.direction_results[-1]
@@ -87,7 +108,7 @@ def test_travel_amount_shortfall_fails_immediately():
     assert len(result.check_results) == 1  # 이동량에서 즉시 종료, 나머지 체크 없음
 
 
-def test_shift_exceeds_threshold_fails():
+def test_shift_exceeds_threshold_fails_automatically():
     m = _make_machine()
     m.configure([TravelDirection.UP])
     m.start_next_direction()
@@ -96,50 +117,48 @@ def test_shift_exceeds_threshold_fails():
     xs = [0, 1, 4.0, 1, 0, 0, 0, 0]
     ys = [0, 5, 10, 15, 20, 25, 30, 35]
     t = _feed_ramp(m, x_values=xs, y_values=ys)
-    _feed_hold(m, x=0, y=35, n=6, t0=t)
+    _feed_hold(m, x=0, y=35, n=6, t0=t)  # 목표 근처에서 멈춤 -> 자동 평가되어 즉시 불량 종료
 
-    m.mark_far_point_reached()
-
+    assert m.phase == Phase.INSPECTION_DONE
     result = m.direction_results[-1]
     assert result.verdict == Verdict.FAIL
     assert result.check_results[-1].check_type == CheckType.SHIFT
     assert result.check_results[-1].status == Verdict.FAIL
 
 
-def test_drift_exceeds_threshold_fails():
+def test_drift_exceeds_threshold_fails_automatically():
     # shift 임계값을 넉넉히 잡아 shift는 통과하고 drift만 걸리도록 함
-    # (경로상 최댓값과 도달 시점 값이 같은 시나리오이므로 두 임계값이 같으면 항상 shift가 먼저 걸림)
     m = _make_machine(shift_threshold_moa=5.0)
     m.configure([TravelDirection.UP])
     m.start_next_direction()
 
     t = _feed_ramp(m, x_values=[0] * 8, y_values=[i * 5 for i in range(8)])
-    # 목표 지점에서 교차축이 3.0 moa로 안정 (임계값 2.5 초과)
+    # 목표 지점에서 교차축이 3.0 moa로 안정 (임계값 2.5 초과) -> 멈추는 순간 자동 평가
     _feed_hold(m, x=3.0, y=35, n=6, t0=t)
 
-    m.mark_far_point_reached()
-
+    assert m.phase == Phase.INSPECTION_DONE
     result = m.direction_results[-1]
     assert result.verdict == Verdict.FAIL
     assert result.check_results[-1].check_type == CheckType.DRIFT
     assert result.check_results[-1].status == Verdict.FAIL
 
 
-def test_backlash_exceeds_threshold_fails():
+def test_backlash_exceeds_threshold_fails_automatically():
+    """백래쉬 자체가 '원점 근처인데 0은 아닌' 잔류오차를 재는 값이므로, 원점 복귀 멈춤의
+    자동 감지 범위(near_zero_band_moa)는 이 실패 케이스도 덮을 만큼 넉넉해야 한다."""
     m = _make_machine()
     m.configure([TravelDirection.UP])
     m.start_next_direction()
 
     t = _feed_ramp(m, x_values=[0] * 8, y_values=[i * 5 for i in range(8)])
     t = _feed_hold(m, x=0, y=35, n=6, t0=t)
-    m.mark_far_point_reached()
     assert m.phase == Phase.RETURN
 
-    # 복귀했지만 3.0 moa 만큼 잔류오차 (임계값 2.5 초과)
+    # 복귀했지만 3.0 moa 만큼 잔류오차 (임계값 2.5 초과, near_zero_band_moa=5.0 안쪽이라 자동 감지됨)
     t = _feed_ramp(m, x_values=[0] * 8, y_values=[35 - i * 4 for i in range(8)])
     _feed_hold(m, x=0, y=3.0, n=6, t0=t)
-    m.mark_returned_to_origin()
 
+    assert m.phase == Phase.INSPECTION_DONE
     result = m.direction_results[-1]
     assert result.verdict == Verdict.FAIL
     assert result.check_results[-1].check_type == CheckType.BACKLASH
@@ -171,14 +190,12 @@ def test_abort_discards_without_recording_and_allows_restart():
     assert m.phase == Phase.DIRECTION_DONE
     assert TravelDirection.UP in m.direction_queue  # 재시작 가능하도록 큐에 복귀
 
-    # 재시작
+    # 재시작 - 목표/원점 근처에서 멈추면 자동으로 평가/종료됨
     assert m.start_next_direction() == TravelDirection.UP
     t = _feed_ramp(m, x_values=[0] * 8, y_values=[i * 5 for i in range(8)])
     t = _feed_hold(m, x=0, y=35, n=6, t0=t)
-    m.mark_far_point_reached()
     t = _feed_ramp(m, x_values=[0] * 8, y_values=[35 - i * 5 for i in range(8)])
     _feed_hold(m, x=0, y=0, n=6, t0=t)
-    m.mark_returned_to_origin()
 
     assert len(m.direction_results) == 1
     assert m.direction_results[0].verdict == Verdict.PASS
@@ -190,23 +207,102 @@ def test_direction_only_scope_continues_to_next_direction_after_failure():
     m.configure([TravelDirection.UP, TravelDirection.DOWN])
     m.start_next_direction()
 
-    # UP 방향 이동량 부족 -> 불량이지만 direction_only이므로 검사 계속
-    _feed_ramp(m, x_values=[0] * 4, y_values=[0, 5, 10, 15])
+    # UP 방향 이동량 부족(목표 미달, 자동 감지 안 됨) -> 수동으로 확정 -> 불량이지만
+    # direction_only이므로 검사 계속
+    t = _feed_ramp(m, x_values=[0] * 4, y_values=[0, 5, 10, 15])
+    _feed_hold(m, x=0, y=15, n=6, t0=t)
     m.mark_far_point_reached()
 
     assert m.phase == Phase.DIRECTION_DONE
     assert m.overall_verdict == Verdict.IN_PROGRESS  # 아직 전체 종료 아님
     assert m.has_next_direction()
 
-    # DOWN 방향 진행 (주축 = -y_moa)
+    # DOWN 방향 진행 (주축 = -y_moa), 목표/원점 근처에서 멈추면 자동으로 평가/종료
     assert m.start_next_direction() == TravelDirection.DOWN
     t = _feed_ramp(m, x_values=[0] * 8, y_values=[-i * 5 for i in range(8)])
     t = _feed_hold(m, x=0, y=-35, n=6, t0=t)
-    m.mark_far_point_reached()
     t = _feed_ramp(m, x_values=[0] * 8, y_values=[-35 + i * 5 for i in range(8)])
     _feed_hold(m, x=0, y=0, n=6, t0=t)
-    m.mark_returned_to_origin()
 
     assert m.phase == Phase.INSPECTION_DONE
     assert m.overall_verdict == Verdict.FAIL  # UP이 불량이었으므로 전체는 불량
     assert len(m.direction_results) == 2
+
+
+def test_retest_direction_discards_previous_record_and_resumes_remaining_queue():
+    """상 방향이 (조작 실수로) 불량 처리된 뒤 재시험하면: 이전 기록은 즉시 사라지고, 아직
+    시도하지 못한 나머지 방향(하)도 큐에 복원되어 이어서 진행된다."""
+    m = _make_machine()  # stop_on_failure_scope="entire_inspection" (기본값)
+    m.configure([TravelDirection.UP, TravelDirection.DOWN])
+    m.start_next_direction()
+
+    # UP: 이동량 미달로 불량 -> entire_inspection이라 전체 검사 종료(하는 시도조차 못 함)
+    t = _feed_ramp(m, x_values=[0] * 4, y_values=[0, 5, 10, 15])
+    _feed_hold(m, x=0, y=15, n=6, t0=t)
+    m.mark_far_point_reached()
+
+    assert m.phase == Phase.INSPECTION_DONE
+    assert m.overall_verdict == Verdict.FAIL
+    assert len(m.direction_results) == 1
+    assert m.direction_results[0].direction == TravelDirection.UP
+    assert m.direction_results[0].verdict == Verdict.FAIL
+
+    # 재시험: 이전 UP 기록은 사라지고, UP + (아직 못한) DOWN이 큐에 복원됨
+    m.retest_direction(TravelDirection.UP)
+    assert m.direction_results == []  # 즉시 초기화됨(이력 보존 없음)
+    assert list(m.direction_queue) == [TravelDirection.UP, TravelDirection.DOWN]
+    assert m.overall_verdict == Verdict.IN_PROGRESS
+
+    # UP 재시험: 이번엔 정상적으로 합격
+    assert m.start_next_direction() == TravelDirection.UP
+    t = _feed_ramp(m, x_values=[0] * 8, y_values=[i * 5 for i in range(8)])
+    t = _feed_hold(m, x=0, y=35, n=6, t0=t)
+    t = _feed_ramp(m, x_values=[0] * 8, y_values=[35 - i * 5 for i in range(8)])
+    _feed_hold(m, x=0, y=0, n=6, t0=t)
+    assert m.direction_results[-1].verdict == Verdict.PASS
+    assert m.has_next_direction()  # DOWN이 이어서 대기 중
+
+    # DOWN도 정상 진행
+    assert m.start_next_direction() == TravelDirection.DOWN
+    t = _feed_ramp(m, x_values=[0] * 8, y_values=[-i * 5 for i in range(8)])
+    t = _feed_hold(m, x=0, y=-35, n=6, t0=t)
+    t = _feed_ramp(m, x_values=[0] * 8, y_values=[-35 + i * 5 for i in range(8)])
+    _feed_hold(m, x=0, y=0, n=6, t0=t)
+
+    assert m.phase == Phase.INSPECTION_DONE
+    assert m.overall_verdict == Verdict.PASS  # 옛 UP 불량 기록이 남아있지 않으므로 전체 합격
+    assert len(m.direction_results) == 2
+
+
+def test_retest_direction_requires_completed_direction():
+    m = _make_machine()
+    m.configure([TravelDirection.UP])
+    with pytest.raises(RuntimeError):
+        m.retest_direction(TravelDirection.UP)  # 아직 완료된 적 없음
+
+
+def test_finalize_locks_out_further_retest():
+    m = _make_machine()
+    m.configure([TravelDirection.UP])
+    m.start_next_direction()
+    t = _feed_ramp(m, x_values=[0] * 8, y_values=[i * 5 for i in range(8)])
+    t = _feed_hold(m, x=0, y=35, n=6, t0=t)
+    t = _feed_ramp(m, x_values=[0] * 8, y_values=[35 - i * 5 for i in range(8)])
+    _feed_hold(m, x=0, y=0, n=6, t0=t)
+
+    assert m.is_ready_to_finalize
+    m.finalize()
+    assert m.finalized
+    assert not m.is_ready_to_finalize
+
+    with pytest.raises(RuntimeError):
+        m.retest_direction(TravelDirection.UP)
+
+
+def test_finalize_before_all_directions_done_raises():
+    m = _make_machine()
+    m.configure([TravelDirection.UP, TravelDirection.DOWN])
+    m.start_next_direction()
+    assert not m.is_ready_to_finalize
+    with pytest.raises(RuntimeError):
+        m.finalize()

@@ -45,9 +45,11 @@ class TravelTestStateMachine:
         )
 
         self.direction_queue: list[TravelDirection] = []
+        self._planned_directions: list[TravelDirection] = []  # 재시험 시 남은 미완료 방향 복원용
         self.current_direction: TravelDirection | None = None
         self.phase: Phase = Phase.IDLE
         self.overall_verdict: Verdict = Verdict.IN_PROGRESS
+        self.finalized: bool = False  # "시험 종료"(DB 저장) 버튼을 누르면 True - 이후 재시험 불가
 
         self.direction_results: list[DirectionTestResult] = []
         self._attempt_counters: dict[TravelDirection, int] = {}
@@ -57,7 +59,6 @@ class TravelTestStateMachine:
         self._max_abs_cross: float = 0.0
         self._last_primary: float = 0.0
         self._last_cross: float = 0.0
-        self._drift_value: float | None = None
         self._pending_checks: list[CheckResult] = []
         self._dead_click_flagged: bool = False
 
@@ -66,9 +67,11 @@ class TravelTestStateMachine:
         if self.phase not in (Phase.IDLE, Phase.INSPECTION_DONE):
             raise RuntimeError("검사가 진행 중일 때는 방향 큐를 재구성할 수 없습니다. abort 또는 완료 후 사용하세요.")
         self.direction_queue = list(directions)
+        self._planned_directions = list(directions)
         self.current_direction = None
         self.phase = Phase.IDLE
         self.overall_verdict = Verdict.IN_PROGRESS
+        self.finalized = False
         self.direction_results = []
 
     def has_next_direction(self) -> bool:
@@ -94,12 +97,13 @@ class TravelTestStateMachine:
 
     def restart_all(self) -> None:
         """전체 검사를 처음부터 재시작 (같은 scope 기준, 방향 큐/결과 모두 초기화)."""
-        all_directions = [r.direction for r in self.direction_results] if not self.direction_queue else None
         self.direction_queue = []
+        self._planned_directions = []
         self.current_direction = None
         self.direction_results = []
         self._attempt_counters = {}
         self.overall_verdict = Verdict.IN_PROGRESS
+        self.finalized = False
         self.phase = Phase.IDLE
 
     def abort_current_direction(self) -> None:
@@ -113,6 +117,41 @@ class TravelTestStateMachine:
         if self.current_direction not in self.direction_queue:
             self.direction_queue.insert(0, self.current_direction)
         self.current_direction = None
+
+    def retest_direction(self, direction: TravelDirection) -> None:
+        """이미 완료된(합격/불량 무관) 방향을 재시험한다 - 작업자의 조작 실수로 기록이 이상해
+        보일 때 사용. abort와 달리 "이미 끝난" 방향을 대상으로 하며, 그 방향의 이전 기록은
+        즉시 초기화(폐기)되고 재시험 결과로 대체된다(이력 보존 없음 - 아직 DB에 저장되지 않은
+        상태이므로 그냥 지워도 됨. finalize() 이후에는 재시험 불가).
+
+        stop_on_failure_scope="entire_inspection"으로 검사 전체가 먼저 종료된 상태였다면,
+        아직 시도하지 못한 나머지 방향들도 함께 큐에 복원해 이어서 진행할 수 있게 한다.
+        """
+        if self.finalized:
+            raise RuntimeError("이미 시험 종료(저장)된 검사는 재시험할 수 없습니다.")
+        if self.phase not in (Phase.DIRECTION_DONE, Phase.INSPECTION_DONE):
+            raise RuntimeError("진행 중인 방향이 있을 때는 재시험을 시작할 수 없습니다 (먼저 종료하세요).")
+        if not any(r.direction == direction for r in self.direction_results):
+            raise RuntimeError(f"{direction}는 완료된 적이 없어 재시험할 수 없습니다.")
+
+        self.direction_results = [r for r in self.direction_results if r.direction != direction]
+        attempted = {r.direction for r in self.direction_results}
+        remaining = [d for d in self._planned_directions if d not in attempted and d != direction]
+        self.direction_queue = [direction, *remaining]
+        self.overall_verdict = Verdict.IN_PROGRESS
+        self.phase = Phase.DIRECTION_DONE  # start_next_direction()으로 바로 이어서 시작 가능
+
+    # ---- 최종 확정(DB 저장 게이트) ----
+    @property
+    def is_ready_to_finalize(self) -> bool:
+        return self.phase == Phase.INSPECTION_DONE and not self.finalized
+
+    def finalize(self) -> None:
+        """'시험 종료' 버튼 - 지금까지의 결과를 확정한다. 이후에는 재시험이 불가능하며,
+        UI/리포지토리는 이 시점의 direction_results/overall_verdict를 DB에 저장한다."""
+        if not self.is_ready_to_finalize:
+            raise RuntimeError("아직 모든 방향이 끝나지 않았거나 이미 종료되었습니다.")
+        self.finalized = True
 
     # ---- 실시간 위치 피드 ----
     def feed_position(self, sample: PositionSample) -> None:
@@ -130,9 +169,27 @@ class TravelTestStateMachine:
         # StabilityDetector는 (주축, 교차축)을 (x_moa, y_moa) 슬롯에 재사용해서 먹인다
         stability_sample = PositionSample(timestamp_s=sample.timestamp_s, x_moa=primary, y_moa=cross)
         state = self._stability.feed(stability_sample)
-        if state.is_stable and self.phase == Phase.OUTBOUND and self._drift_value is None:
-            # 목표 부근에서 안정되면 그 순간의 교차축 값을 드리프트로 기록
-            self._drift_value = state.stable_position[1]
+        if not state.is_stable:
+            return
+
+        # "이동 완료"/"원점 복귀 완료" 버튼 없이도, 작업자가 실제로 하던 대로(목표 근처에서
+        # 잠깐 멈춰 눈금 확인 -> 후진 -> 원점 근처에서 잠깐 멈춰 백래쉬 확인) 진행하면 그
+        # 멈춤을 감지해 자동으로 평가한다. 이동 중간에 잠깐 멈추는 것(예: 손 위치 고쳐잡기)은
+        # 무시되도록, OUTBOUND는 목표 도달 여부로, RETURN은 원점 근접 여부로 게이팅한다.
+        #
+        # mark_far_point_reached()/mark_returned_to_origin()는 그대로 공개 API로 남겨둔다 -
+        # 기계적 한계로 목표에 못 미쳐 자동 감지가 안 되는 경우(실측 사례) 작업자가 직접
+        # "여기까지가 한계"라고 수동으로 확정할 수 있는 유일한 경로이기 때문.
+        if self.phase == Phase.OUTBOUND:
+            if self._max_primary_reached >= self.settings.travel_target_moa - self.MEASUREMENT_EPSILON_MOA:
+                self.mark_far_point_reached()
+        elif self.phase == Phase.RETURN:
+            # near_zero_band_moa는 "0에 정확히 온 상태"가 아니라 "복귀를 마쳤다고 판단할 수
+            # 있는 근방"을 뜻함 - 백래쉬 자체가 0에서 떨어져 있는 걸 재는 값이므로, 이 밴드가
+            # 너무 좁으면(예: backlash_threshold_moa보다 좁으면) 실제 백래쉬 불량을 자동으로
+            # 잡아내지 못하게 된다. 도중에 잠깐 멈추는 것과는 충분히 구분되는 값으로 설정할 것.
+            if abs(self._last_primary) <= self.settings.near_zero_band_moa:
+                self.mark_returned_to_origin()
 
     # ---- 작업자 액션 ----
     def flag_dead_click(self) -> None:
@@ -187,7 +244,9 @@ class TravelTestStateMachine:
             self._finalize_direction(checks, Verdict.FAIL)
             return
 
-        drift_measured = abs(self._drift_value) if self._drift_value is not None else abs(self._last_cross)
+        # mark_far_point_reached()는 항상 목표 근처에서 안정된 직후(자동 감지) 또는 작업자가
+        # 그 상태를 보면서 직접(수동) 호출하므로, 호출 시점의 _last_cross가 곧 "정착된" 값이다.
+        drift_measured = abs(self._last_cross)
         drift_ok = drift_measured <= s.drift_threshold_moa
         checks.append(
             CheckResult(
@@ -232,7 +291,6 @@ class TravelTestStateMachine:
         self._max_abs_cross = 0.0
         self._last_primary = 0.0
         self._last_cross = 0.0
-        self._drift_value = None
         self._pending_checks = []
         self._dead_click_flagged = False
 
