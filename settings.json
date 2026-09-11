@@ -1,0 +1,94 @@
+{
+  "camera": {
+    "device_serial": "",
+    "frame_rate_fps": 50.01,
+    "exposure_time_us": 15000.0,
+    "exposure_limited_by_frame_rate": true,
+    "device_link_throughput_limit_bps": 350000000,
+    "analog_gain": 2.0,
+    "digital_gain_r": 1.0,
+    "digital_gain_g": 1.0,
+    "digital_gain_b": 1.0,
+    "black_level_auto": "off",
+    "black_level": 0.03,
+    "auto_function_owner": "host",
+    "auto_exposure": "off",
+    "auto_gain": "off",
+    "brightness_roi_frame_skip": 2,
+    "brightness_roi": "full",
+    "brightness_percentile": 13.0,
+    "brightness_target": 150,
+    "brightness_tolerance": 3,
+    "auto_white_balance": "off",
+    "wb_gain_r": 1.0,
+    "wb_gain_g": 1.0,
+    "wb_gain_b": 1.0,
+    "color_correction_host": "off",
+    "color_correction_matrix_preset": "HQ",
+    "saturation_enabled": false,
+    "saturation": 1.0,
+    "chromatic_adaption_enabled": false,
+    "chromatic_adaption_algorithm": "Bradford",
+    "chromatic_adaption_color_space": "sRGB D65",
+    "chromatic_adaption_color_temp_k": 6500
+  },
+  "database": {
+    "server": "",
+    "database": "",
+    "auth_mode": "sql",
+    "user": "",
+    "password": ""
+  },
+  "calibration": {
+    "mrad_to_moa_ratio": 3.438
+  },
+  "detection": {
+    "hsv_lower1": [
+      5,
+      80,
+      120
+    ],
+    "hsv_upper1": [
+      35,
+      255,
+      255
+    ],
+    "hsv_lower2": [
+      0,
+      0,
+      0
+    ],
+    "hsv_upper2": [
+      4,
+      255,
+      255
+    ],
+    "min_blob_area": 15.0,
+    "max_blob_jump_px": 60.0
+  },
+  "stage1": {
+    "tolerance_moa": 0.5,
+    "stable_duration_ms": 500.0
+  },
+  "stage2": {
+    "travel_target_moa": 35.0,
+    "drift_threshold_moa": 2.5,
+    "shift_threshold_moa": 2.5,
+    "backlash_threshold_moa": 2.5,
+    "near_zero_band_moa": 1.0,
+    "stop_on_failure_scope": "entire_inspection"
+  },
+  "stability": {
+    "window_size_samples": 8,
+    "variance_threshold_moa2": 0.01,
+    "min_stable_duration_ms": 150.0
+  },
+  "direction_queue": {
+    "default_order": [
+      "up",
+      "down",
+      "left",
+      "right"
+    ]
+  }
+}
