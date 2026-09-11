@@ -85,7 +85,14 @@ class Stage2TravelTestView(QWidget):
         )
         for row, check_type in enumerate(_CHECK_ROW_ORDER):
             self.results_table.setItem(row, 0, QTableWidgetItem(_CHECK_ROW_LABELS[check_type]))
-        self.results_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        # 우측 패널 폭이 좁아 6개 열을 억지로 다 채우면 라벨이 잘림 - 각 열에 읽기 편한
+        # 최소 폭을 주고 안 맞으면 표 자체가 가로 스크롤되게 한다(내용을 잘라내지 않음).
+        header = self.results_table.horizontalHeader()
+        header.setSectionResizeMode(QHeaderView.Interactive)
+        header.setMinimumSectionSize(60)
+        self.results_table.setColumnWidth(0, 110)
+        for col in range(1, len(_DIRECTION_ORDER) + 2):
+            self.results_table.setColumnWidth(col, 55)
         self.results_table.verticalHeader().setVisible(False)
         self._refresh_results_table()
 

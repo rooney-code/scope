@@ -26,7 +26,7 @@ import cv2
 import numpy as np
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QImage, QMouseEvent, QPixmap
-from PySide6.QtWidgets import QCheckBox, QHBoxLayout, QLabel, QSlider, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QCheckBox, QHBoxLayout, QLabel, QSizePolicy, QSlider, QVBoxLayout, QWidget
 
 from core.calibration.grid_overlay import draw_coordinate_axes, draw_dot_guide_lines
 from core.calibration.pixel_angle_calibration import CalibrationProfile, PixelAngleCalibration
@@ -61,7 +61,11 @@ class LiveFeedView(QWidget):
 
         self._image_label = _ClickableImageLabel("카메라 대기 중...")
         self._image_label.setAlignment(Qt.AlignCenter)
-        self._image_label.setMinimumSize(640, 480)
+        # 영상이 거의 정사각(3088x2076)이라 표시 영역도 정사각에 가깝게, 기본값을 충분히
+        # 크게(960x960) 잡는다 - QLabel 기본 사이즈 정책(Preferred)은 레이아웃에서 남는
+        # 공간을 스스로 차지하지 않으므로 Expanding으로 바꿔 창 크기에 맞춰 커지게 한다.
+        self._image_label.setMinimumSize(960, 960)
+        self._image_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self._image_label.clicked.connect(self._on_image_clicked)
 
         self._zoom_slider = QSlider(Qt.Horizontal)

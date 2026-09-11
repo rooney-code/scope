@@ -56,9 +56,12 @@ class MainWindow(QMainWindow):
             self.right_tabs.addTab(self.results_view, "결과 조회")
         self.right_tabs.currentChanged.connect(self._on_right_tab_changed)
 
+        # 와이어프레임 비율 그대로: 우측 패널은 폭을 제한해두고 영상이 남는 공간을 전부
+        # 차지하게 한다(영상이 거의 정사각이라 이렇게 해야 크게 보임).
+        self.right_tabs.setMaximumWidth(420)
         body = QHBoxLayout()
-        body.addWidget(self.live_feed_view, stretch=3)
-        body.addWidget(self.right_tabs, stretch=2)
+        body.addWidget(self.live_feed_view, stretch=1)
+        body.addWidget(self.right_tabs, stretch=0)
 
         central = QWidget()
         central.setLayout(body)
