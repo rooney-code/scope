@@ -3,6 +3,10 @@
 Hough Line Transform으로 십자선(긴 수평/수직 직선)을 찾아 교차점(원점 후보)을 구하고,
 십자선을 따라 짧은 tick들의 위치(px)를 추정한다.
 
+기본 파라미터(Canny/Hough 임계값)는 실제 현장 캡처 이미지(3088x2076, 조리개 최대 상태)로
+검증/튜닝한 값이다 - 초기 기본값은 합성 테스트 이미지 기준으로 너무 엄격해서 실제 사진에서는
+십자선을 전혀 못 찾는 문제가 있었음(대비가 낮고 선이 짧은 구간으로 끊겨 보임).
+
 정확도는 완벽하지 않을 수 있으며(조명/각도/텍스트 라벨 간섭), 계획서에 따라 이 결과는
 캘리브레이션 UI에서 작업자의 클릭 스냅/화살표 미세조정으로 보정하는 것을 전제로 한다.
 """
@@ -27,21 +31,25 @@ class GridDetectionResult:
 class GridAutoDetector:
     def __init__(
         self,
-        hough_threshold: int = 80,
-        min_line_length_ratio: float = 0.3,  # 프레임 폭/높이 대비 최소 직선 길이 비율
-        max_line_gap: int = 10,
+        hough_threshold: int = 40,
+        min_line_length_ratio: float = 0.1,  # 프레임 폭/높이 대비 최소 직선 길이 비율
+        max_line_gap: int = 40,
         angle_tolerance_deg: float = 3.0,
+        canny_threshold1: int = 10,
+        canny_threshold2: int = 50,
     ) -> None:
         self.hough_threshold = hough_threshold
         self.min_line_length_ratio = min_line_length_ratio
         self.max_line_gap = max_line_gap
         self.angle_tolerance_deg = angle_tolerance_deg
+        self.canny_threshold1 = canny_threshold1
+        self.canny_threshold2 = canny_threshold2
 
     def detect(self, frame_bgr: np.ndarray) -> GridDetectionResult:
         gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
         h, w = gray.shape[:2]
 
-        edges = cv2.Canny(gray, 30, 100)
+        edges = cv2.Canny(gray, self.canny_threshold1, self.canny_threshold2)
         min_len = int(min(w, h) * self.min_line_length_ratio)
         lines = cv2.HoughLinesP(
             edges,
@@ -70,13 +78,8 @@ class GridAutoDetector:
         if not horizontals or not verticals:
             return GridDetectionResult(found=False)
 
-        horizontals.sort(key=lambda t: t[0], reverse=True)
-        verticals.sort(key=lambda t: t[0], reverse=True)
-        _, hx1, hy1, hx2, hy2, h_angle = horizontals[0]
-        _, vx1, vy1, vx2, vy2, v_angle = verticals[0]
-
-        origin_y = (hy1 + hy2) / 2.0
-        origin_x = (vx1 + vx2) / 2.0
+        origin_y, h_angle = self._cluster_axis_position(horizontals, coord_index=(2, 4))
+        origin_x, v_angle = self._cluster_axis_position(verticals, coord_index=(1, 3))
 
         tick_x = self._detect_ticks(gray, axis="x", axis_coord=origin_y)
         tick_y = self._detect_ticks(gray, axis="y", axis_coord=origin_x)
@@ -89,6 +92,21 @@ class GridAutoDetector:
             tick_x_positions_px=tick_x,
             tick_y_positions_px=tick_y,
         )
+
+    @staticmethod
+    def _cluster_axis_position(candidates: list[tuple], coord_index: tuple[int, int]) -> tuple[float, float]:
+        """가장 긴 직선 하나만 쓰지 않고, 그 직선과 가까운(±5px) 위치의 다른 조각들을 함께
+        평균 내어 더 안정적인 축 위치를 구한다 - 실제 사진에서는 십자선이 tick/라벨 텍스트에
+        가려 여러 짧은 조각으로 끊겨 검출되는 경우가 많아 이렇게 하는 편이 더 정확함.
+        """
+        candidates_sorted = sorted(candidates, key=lambda t: t[0], reverse=True)
+        longest = candidates_sorted[0]
+        ref_pos = (longest[coord_index[0]] + longest[coord_index[1]]) / 2.0
+
+        nearby = [c for c in candidates_sorted if abs((c[coord_index[0]] + c[coord_index[1]]) / 2.0 - ref_pos) <= 5]
+        avg_pos = float(np.mean([(c[coord_index[0]] + c[coord_index[1]]) / 2.0 for c in nearby]))
+        avg_angle = float(np.mean([c[5] for c in nearby]))
+        return avg_pos, avg_angle
 
     def _detect_ticks(self, gray: np.ndarray, axis: str, axis_coord: float) -> list[float]:
         """축 선 바로 옆(수직 오프셋)의 얇은 띠에서 어두운 tick 돌출부의 위치를 찾는다.

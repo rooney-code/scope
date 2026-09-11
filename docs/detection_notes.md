@@ -20,3 +20,27 @@ min_blob_area = 15            # px^2, 실기에서 재조정
 ```
 
 실기 캡처 영상으로 1차 튜닝 후 `core/config/settings.py`의 detection 섹션에 반영할 것.
+
+## 실제 현장 이미지 검증 결과 (2026-09-11)
+
+현장에서 촬영한 실제 이미지 3장(`tests/test_images/originals/`: 조리개최대.jpg, 8단계.jpg,
+좌하단_7단계.jpg, 카메라 실해상도 3088x2076 = IDS U3-3880LE-C 스펙과 일치)으로 검증.
+
+- **레드닷 검출(HSV)**: 위 기본값 그대로 8단계/7단계 이미지 모두에서 단일 블롭으로 깔끔하게
+  검출됨(다른 노이즈 후보 없음). 별도 튜닝 불필요했음.
+- **그리드 자동검출(GridAutoDetector)**: 초기 기본값(Canny 30/100, Hough threshold=80,
+  minLineLength=프레임의 30%)은 실제 사진에서 **전혀 검출되지 않았음** - 실제 십자선은 대비가
+  낮고 tick/라벨 텍스트에 가려 짧은 조각들로 끊겨 보이기 때문. 아래 값으로 재튜닝 후 정상
+  검출됨(원점 약 (1605, 681)px, 이미지 중앙(1544, 1038)과는 거리가 있음 - 설치 상태에 따라
+  원점이 중앙이 아닐 수 있다는 점과 일치):
+  ```
+  canny_threshold1=10, canny_threshold2=50
+  hough_threshold=40, min_line_length_ratio=0.1, max_line_gap=40
+  ```
+  또한 가장 긴 선 하나만 쓰지 않고 인접한(±5px) 조각들을 평균 내는 클러스터링을 추가해
+  안정성을 높임 (`GridAutoDetector._cluster_axis_position`). 이 값들이 새 기본값으로
+  `core/calibration/grid_auto_detector.py`에 반영됨.
+- **tick 자동 간격 추정**은 여전히 노이즈가 있어(라벨 텍스트와 혼동) 완전히 신뢰하기 어려움 -
+  계획대로 클릭 스냅/화살표 미세조정을 통한 수동 확정이 필요.
+- 재현 방법: `PYTHONPATH=. python3 scripts/detect_on_real_images.py` (결과는
+  `tests/test_images/results/`에 저장됨).
