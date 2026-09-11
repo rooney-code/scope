@@ -98,6 +98,44 @@ def test_pixel_angle_calibration_mrad_conversion():
     assert abs(calib.profile.px_per_moa_x - expected_px_per_moa) < 1e-3
 
 
+def _make_frame_with_minor_ticks(width=1600, height=400, origin_x=800, origin_y=200, px_per_unit=9.1):
+    """1단위 간격의 보조눈금이 인쇄된 가로축을 흉내낸 합성 이미지 (refine_scale 검증용)."""
+    frame = np.zeros((height, width, 3), dtype=np.uint8)
+    frame[..., 1] = 60
+    cv2.line(frame, (0, origin_y), (width, origin_y), (150, 150, 150), 1)
+    for k in range(-40, 41):
+        if k == 0:
+            continue
+        x = int(round(origin_x + k * px_per_unit))
+        if 0 <= x < width:
+            # tick_strip()의 기본 탐색 밴드(axis_coord-11 ~ axis_coord-8)에 닿도록
+            # 충분히 길게 그림 (실제 사진의 tick도 이 정도로 눈금선 위로 뻗어 있음)
+            cv2.line(frame, (x, origin_y - 14), (x, origin_y + 4), (150, 150, 150), 1)
+    return frame
+
+
+def test_refine_scale_corrects_single_point_snap_error():
+    """snap_tick()의 클릭 1점 측정에 오차가 섞여도(예: 실제 9.1인데 9.4로 잘못 측정),
+    주변 보조눈금(1단위 간격) 다수를 정밀 측정해 최소자승으로 맞추면 참값에 훨씬 가까워져야
+    한다 - 실측(35MOA 근처에서 눈금이 벌어짐)으로 확인된 문제에 대한 회귀 테스트."""
+    true_px_per_unit = 9.1
+    frame = _make_frame_with_minor_ticks(px_per_unit=true_px_per_unit)
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+
+    from core.calibration.grid_auto_detector import GridDetectionResult
+
+    calib = PixelAngleCalibration()
+    calib.seed_from_auto_detection("CAM-REFINE", GridDetectionResult(found=True, origin_px=(800.0, 200.0)))
+    calib.profile.px_per_moa_x = 9.4  # 일부러 부정확한 초기값(단일 지점 스냅의 오차 흉내)
+
+    ok = calib.refine_scale(gray, axis="x", tick_unit_moa=1.0)
+
+    assert ok
+    assert abs(calib.profile.px_per_moa_x - true_px_per_unit) < 0.05
+    # 초기값(9.4)보다 참값(9.1)에 훨씬 가까워졌는지 확인
+    assert abs(calib.profile.px_per_moa_x - true_px_per_unit) < abs(9.4 - true_px_per_unit)
+
+
 def test_calibration_save_and_load_roundtrip():
     calib = PixelAngleCalibration()
     from core.calibration.grid_auto_detector import GridDetectionResult

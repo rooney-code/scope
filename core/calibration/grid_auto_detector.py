@@ -251,26 +251,33 @@ class GridAutoDetector:
         국소적으로 어두운 지점(tick)을 피크로 검출한다. 텍스트 라벨과 혼동될 수 있어
         캘리브레이션 UI의 수동 보정이 최종 확정 단계임을 전제로 한다.
         """
-        h, w = gray.shape[:2]
-        band = 3
-        offset = 8  # 축 선 자체를 피해서 살짝 떨어진 위치에서 tick 돌출부를 봄
+        profile = self.tick_strip(gray, axis, axis_coord)
+        if profile is None:
+            return []
+        return self._find_dark_peaks(profile)
 
+    @staticmethod
+    def tick_strip(
+        gray: np.ndarray, axis: str, axis_coord: float, band: int = 3, offset: int = 8
+    ) -> np.ndarray | None:
+        """축 선 바로 옆(살짝 떨어진 위치)의 얇은 띠를 잘라 평균 밝기 1차원 프로파일로
+        반환한다 - `_detect_ticks()`와 `PixelAngleCalibration.refine_scale()`이 공용으로
+        사용. axis="x": 가로축(수평선) 위의 tick들을 보기 위해 그 수평선과 나란한 띠를
+        추출(프로파일은 x좌표에 따라 변함). axis="y": 세로축 옆 띠(프로파일은 y좌표에 따라
+        변함). 반환하는 프로파일의 인덱스 0은 원본 이미지의 x=0(또는 y=0)에 대응한다.
+        """
+        h, w = gray.shape[:2]
         if axis == "x":
             y0 = int(max(0, axis_coord - offset - band))
             y1 = int(max(0, axis_coord - offset))
             if y1 <= y0:
-                return []
-            strip = gray[y0:y1, :]
-            profile = strip.mean(axis=0)
-        else:
-            x0 = int(max(0, axis_coord - offset - band))
-            x1 = int(max(0, axis_coord - offset))
-            if x1 <= x0:
-                return []
-            strip = gray[:, x0:x1]
-            profile = strip.mean(axis=1)
-
-        return self._find_dark_peaks(profile)
+                return None
+            return gray[y0:y1, :].mean(axis=0)
+        x0 = int(max(0, axis_coord - offset - band))
+        x1 = int(max(0, axis_coord - offset))
+        if x1 <= x0:
+            return None
+        return gray[:, x0:x1].mean(axis=1)
 
     @staticmethod
     def _find_dark_peaks(profile: np.ndarray, min_gap: int = 5) -> list[float]:

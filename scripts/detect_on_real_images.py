@@ -14,6 +14,7 @@ from pathlib import Path
 import cv2
 
 from core.calibration.grid_auto_detector import GridAutoDetector
+from core.calibration.pixel_angle_calibration import PixelAngleCalibration
 from core.config.settings import DetectionSettings
 from core.vision.red_dot_detector import RedDotDetector
 
@@ -34,6 +35,26 @@ def main() -> None:
     if not grid_result.found:
         print("그리드 원점 검출 실패 - GridAutoDetector 파라미터를 재조정해야 합니다.")
         return
+
+    gray_bright = cv2.cvtColor(bright, cv2.COLOR_BGR2GRAY)
+    calib = PixelAngleCalibration()
+    calib.seed_from_auto_detection("DEMO", grid_result)
+    # 실제 작업 흐름과 동일하게: 작업자가 10mrad 위치의 tick 하나를 클릭 스냅해 초기
+    # px_per_moa를 잡은 뒤, refine_scale()로 근처 보조눈금 다수를 이용해 정밀화한다.
+    calib.snap_tick(tick_px=1921.0, known_value=10.0, unit="mrad", axis="x")
+    calib.profile.px_per_moa_y = calib.profile.px_per_moa_x
+    ok_x = calib.refine_scale(gray_bright, axis="x")
+    print(
+        f"[정밀 스케일 보정 (조리개최대, X축)] 성공={ok_x}, "
+        f"사용된 보조눈금 개수={calib.last_refine_tick_count}, "
+        f"px_per_moa_x={calib.profile.px_per_moa_x:.4f}"
+    )
+    ok_y = calib.refine_scale(gray_bright, axis="y")
+    print(
+        f"[정밀 스케일 보정 (조리개최대, Y축)] 성공={ok_y}, "
+        f"사용된 보조눈금 개수={calib.last_refine_tick_count}, "
+        f"px_per_moa_y={calib.profile.px_per_moa_y:.4f}"
+    )
 
     dot_detector = RedDotDetector(DetectionSettings())
     for name in RED_DOT_IMAGES:

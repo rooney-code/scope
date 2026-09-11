@@ -24,18 +24,22 @@ _GUIDE_COLOR_BGR = (0, 200, 255)  # 주황/노랑 계열 - 좌표축과 구분�
 def draw_coordinate_axes(
     frame_bgr: np.ndarray,
     profile: CalibrationProfile,
-    moa_step: float = 10.0,
+    tick_step_moa: float = 1.0,
+    label_step_moa: float = 10.0,
     color_bgr: tuple[int, int, int] = _AXIS_COLOR_BGR,
     thickness: int = 2,
     tick_length_px: int = 8,
+    minor_tick_length_px: int = 4,
     max_moa_range: float = 45.0,
     draw_labels: bool = True,
 ) -> np.ndarray:
     """원점을 지나는 좌표축 2개(가로/세로)와 MOA 눈금(작은 틱 + 숫자 라벨)만 그린다.
 
-    촘촘한 격자 대신 좌표축 하나씩만 그려서, 눈금을 보고 위치를 가늠할 수 있게 하되
-    화면을 뒤덮는 체크무늬가 되지 않게 한다. 숫자 라벨은 cv2.putText가 한글 글리프를
-    지원하지 않으므로 ASCII 숫자만 사용한다.
+    눈금(tick)은 tick_step_moa 간격(기본 1MOA)으로 촘촘히 그리되, 숫자 라벨은
+    label_step_moa 간격(기본 10MOA)에서만 표시해 촘촘한 격자처럼 화면을 뒤덮지 않게
+    한다(사용자 피드백 반영). label_step_moa의 배수에 해당하는 tick은 더 길게(주눈금)
+    그려 구분한다. 숫자 라벨은 cv2.putText가 한글 글리프를 지원하지 않으므로 ASCII
+    숫자만 사용한다.
     """
     out = frame_bgr.copy()
     h, w = out.shape[:2]
@@ -45,28 +49,33 @@ def draw_coordinate_axes(
     cv2.line(out, (0, oy_i), (w, oy_i), color_bgr, thickness)
     cv2.line(out, (ox_i, 0), (ox_i, h), color_bgr, thickness)
 
-    steps = int(max_moa_range / moa_step)
+    steps = int(round(max_moa_range / tick_step_moa))
     font_scale = max(0.4, min(1.0, w / 2400))
+    # 부동소수 나머지 오차(예: 10.0 % 10.0 != 0)를 피하기 위해 배수 여부를 정수 나눗셈으로 판단
+    label_multiple = max(1, round(label_step_moa / tick_step_moa))
     for i in range(-steps, steps + 1):
         if i == 0:
             continue
-        m = i * moa_step
+        m = i * tick_step_moa
+        is_major = i % label_multiple == 0
+        length = tick_length_px if is_major else minor_tick_length_px
+        show_label = draw_labels and is_major
 
         x_px = int(round(ox + m * profile.px_per_moa_x))
         if 0 <= x_px < w:
-            cv2.line(out, (x_px, oy_i - tick_length_px), (x_px, oy_i + tick_length_px), color_bgr, thickness)
-            if draw_labels:
+            cv2.line(out, (x_px, oy_i - length), (x_px, oy_i + length), color_bgr, thickness)
+            if show_label:
                 cv2.putText(
-                    out, f"{m:g}", (x_px + 3, oy_i - tick_length_px - 4),
+                    out, f"{m:g}", (x_px + 3, oy_i - length - 4),
                     cv2.FONT_HERSHEY_SIMPLEX, font_scale, color_bgr, 1,
                 )
 
         y_px = int(round(oy - m * profile.px_per_moa_y))  # 화면 y 반전 (위 = +Y)
         if 0 <= y_px < h:
-            cv2.line(out, (ox_i - tick_length_px, y_px), (ox_i + tick_length_px, y_px), color_bgr, thickness)
-            if draw_labels:
+            cv2.line(out, (ox_i - length, y_px), (ox_i + length, y_px), color_bgr, thickness)
+            if show_label:
                 cv2.putText(
-                    out, f"{m:g}", (ox_i + tick_length_px + 3, y_px + 4),
+                    out, f"{m:g}", (ox_i + length + 3, y_px + 4),
                     cv2.FONT_HERSHEY_SIMPLEX, font_scale, color_bgr, 1,
                 )
 

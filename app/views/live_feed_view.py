@@ -92,15 +92,16 @@ class LiveFeedView(QWidget):
     def _current_view_range_moa(self) -> float:
         return self._default_view_range_moa / self._zoom_level
 
-    def _current_axis_tick_step_moa(self) -> float:
-        """확대 단계와 무관하게 좌표축에 대략 8~12개 정도의 눈금만 보이도록 간격을 정한다.
+    def _current_axis_label_step_moa(self) -> float:
+        """숫자 라벨은 대략 8~12개 정도만 보이도록 간격을 정한다(눈금 자체는 1MOA 고정).
 
-        스케일(px/MOA)이 카메라마다 다르므로 1MOA 고정 간격은 배율에 따라 눈금이 너무
-        빽빽해질 수 있다 - view_range_moa에 맞춰 1/2/5/10/20/50 중 가장 적절한 간격을 고른다.
+        스케일(px/MOA)이 카메라마다 다르므로 숫자 라벨까지 view_range와 무관하게
+        고정하면 배율에 따라 너무 빽빽하거나 너무 뜸해질 수 있다 - view_range_moa에 맞춰
+        1/2/5/10/20/50 중 가장 적절한 라벨 간격을 고른다(1MOA 눈금 간격의 배수가 되도록).
         """
-        target_ticks = 10
-        raw_step = (self._current_view_range_moa() * 2) / target_ticks
-        nice_steps = [0.5, 1, 2, 5, 10, 20, 50, 100]
+        target_labels = 10
+        raw_step = (self._current_view_range_moa() * 2) / target_labels
+        nice_steps = [1, 2, 5, 10, 20, 50, 100]
         return min(nice_steps, key=lambda s: abs(s - raw_step))
 
     def on_frame(self, frame_bgr: np.ndarray) -> None:
@@ -126,7 +127,8 @@ class LiveFeedView(QWidget):
             display = draw_coordinate_axes(
                 display,
                 display_profile,
-                moa_step=self._current_axis_tick_step_moa(),
+                tick_step_moa=1.0,
+                label_step_moa=self._current_axis_label_step_moa(),
                 max_moa_range=self._current_view_range_moa(),
             )
             if dot_px_display is not None:

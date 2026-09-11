@@ -50,7 +50,18 @@ def main() -> None:
     calibration.seed_from_auto_detection("DEMO-CAM", grid_result)
     calibration.snap_tick(tick_px=DEMO_10MRAD_TICK_X_PX, known_value=10.0, unit="mrad", axis="x")
     calibration.profile.px_per_moa_y = calibration.profile.px_per_moa_x  # y축 근사치(주석 참고)
-    print(f"[캘리브레이션] px_per_moa: {calibration.profile.px_per_moa_x:.3f}")
+    print(f"[캘리브레이션] 클릭 스냅(1점) px_per_moa: {calibration.profile.px_per_moa_x:.3f}")
+
+    # 클릭 1점 스냅은 먼 지점(35MOA 근처)일수록 오차가 확대되어 보이는 문제가 있었음(실측
+    # 확인) - 원점 주변 보조눈금(1MOA 간격) 다수를 정밀 측정해 최소자승으로 재보정한다.
+    gray_bright = cv2.cvtColor(bright, cv2.COLOR_BGR2GRAY)
+    for axis in ("x", "y"):
+        ok = calibration.refine_scale(gray_bright, axis=axis)
+        px_per_moa = calibration.profile.px_per_moa_x if axis == "x" else calibration.profile.px_per_moa_y
+        print(
+            f"[캘리브레이션] 정밀 보정({axis}축): 성공={ok}, "
+            f"사용된 보조눈금 개수={calibration.last_refine_tick_count}, px_per_moa={px_per_moa:.4f}"
+        )
 
     detector = RedDotDetector(DetectionSettings())
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
