@@ -27,6 +27,7 @@ class MainWindow(QMainWindow):
         gate_layout.addWidget(self.scope_id_input)
 
         self.live_feed_view = LiveFeedView()
+        self.live_feed_view.set_calibration(self.vm.calibration)
         self.calibration_view = CalibrationView(self.vm.calibration, camera_id)
         self.camera_settings_view = CameraSettingsView(self.vm.camera, self.vm.settings.camera)
         self.stage1_view = Stage1AlignmentView(self.vm.settings.stage1, on_ready_to_proceed=self._on_stage1_ready)
