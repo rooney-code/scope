@@ -90,9 +90,9 @@ class Stage2TravelTestView(QWidget):
         header = self.results_table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.Interactive)
         header.setMinimumSectionSize(60)
-        self.results_table.setColumnWidth(0, 110)
+        self.results_table.setColumnWidth(0, 120)
         for col in range(1, len(_DIRECTION_ORDER) + 2):
-            self.results_table.setColumnWidth(col, 55)
+            self.results_table.setColumnWidth(col, 90)
         self.results_table.verticalHeader().setVisible(False)
         self._refresh_results_table()
 
