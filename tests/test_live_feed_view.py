@@ -113,6 +113,50 @@ def test_axis_label_step_picks_a_readable_spacing():
     assert view._current_axis_label_step_moa() <= 5.0
 
 
+def test_calibration_mode_skips_crop_even_with_profile_set():
+    """캘리브레이션 탭에서는 먼 tick(예: ±35MOA 근처)도 클릭할 수 있어야 하므로, 캘리브레이션
+    프로파일이 있어도 크롭하지 않고 원본 전체를 (비율 유지) 축소만 해서 보여줘야 한다."""
+    calib = _make_calibration((500.0, 500.0), px_per_moa=6.0)
+    view = LiveFeedView(default_view_range_moa=45.0, display_target_size=800)
+    view.set_calibration(calib)
+    view.set_calibration_mode(True)
+
+    frame = np.zeros((1000, 2000, 3), dtype=np.uint8)
+    view.on_frame(frame)
+
+    # display_target_size=800, 원본 비율 2:1 유지 -> 800x400 (크롭됐다면 훨씬 작은 영역이 됨)
+    assert view._last_display_size == (800, 400)
+    assert view._last_transform == (0.0, 0.0, 0.4)
+
+
+def test_calibration_mode_click_maps_back_to_original_frame_coords():
+    """LiveFeedView가 캘리브레이션 모드에서 라벨 클릭을 받으면, 크롭 변환 + letterbox를
+    모두 역산해서 원본 프레임 좌표를 frame_clicked_px로 내보내야 한다."""
+    view = LiveFeedView(display_target_size=800)
+    view.set_calibration_mode(True)
+
+    frame = np.zeros((1000, 2000, 3), dtype=np.uint8)  # 캘리브레이션 없이도(원점 미지정) 동작
+    view.on_frame(frame)  # display = 800x400, transform=(0,0,0.4)
+
+    view._image_label.resize(1600, 1600)  # 라벨이 정사각형이라 letterbox(상하 여백)가 생김
+
+    received: list[tuple[float, float]] = []
+    view.frame_clicked_px.connect(lambda x, y: received.append((x, y)))
+
+    # 라벨 안에서 display(800x400)가 그려지는 영역: label_scale=min(1600/800,1600/400)=2
+    # -> disp 800x400이 1600x800으로 그려지고 상하로 (1600-800)/2=400px씩 여백
+    view._on_image_clicked(label_x=1600 / 2, label_y=400 + 800 / 2)  # display 중앙 클릭
+    assert len(received) == 1
+    orig_x, orig_y = received[0]
+    assert orig_x == pytest.approx(1000.0, abs=1.0)  # 2000/2
+    assert orig_y == pytest.approx(500.0, abs=1.0)  # 1000/2
+
+    # letterbox 여백(예: 맨 위)을 클릭하면 무시되어야 함
+    received.clear()
+    view._on_image_clicked(label_x=800, label_y=10)
+    assert received == []
+
+
 def test_offset_text_uses_ascii_labels_not_korean():
     """cv2.putText는 한글을 지원하지 않아 깨지므로, 오버레이에 굽는 텍스트는 R/L/U/D 같은
     영문 라벨만 사용해야 한다(라벨 문구 자체는 한글이어도 되는 self._offset_label은 예외)."""

@@ -135,10 +135,10 @@ class InspectionViewModel(QObject):
 
     # ---- 프레임 처리 ----
     def _on_frame(self, frame_bgr: np.ndarray) -> None:
-        # 원본 프레임을 그대로 내보낸다 - 격자 오버레이/원점·레드닷 마커/크롭은 각 View가
-        # 자신의 용도에 맞게 그린다(예: LiveFeedView는 격자 토글+원점 크롭, CalibrationView는
-        # 원본 그대로 보여줌). 뷰모델이 프레임 자체를 가공하면 다른 View에도 영향을 주게 되어
-        # 여기서는 순수 전달만 담당한다.
+        # 원본 프레임을 그대로 내보낸다 - 격자 오버레이/원점·레드닷 마커/크롭/캘리브레이션
+        # 모드(원본 그대로+클릭 스냅)는 모두 LiveFeedView 하나가 화면 좌측에 항상 떠 있으면서
+        # 현재 활성 탭에 따라 모드를 바꿔가며 그린다(MainWindow.set_calibration_mode() 참고).
+        # 뷰모델이 프레임 자체를 가공하면 다른 모드에도 영향을 주게 되어 여기서는 순수 전달만 담당한다.
         self.frame_ready.emit(frame_bgr)
 
         candidates = self.detector.detect(frame_bgr)

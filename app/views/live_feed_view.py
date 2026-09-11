@@ -24,8 +24,8 @@ from __future__ import annotations
 
 import cv2
 import numpy as np
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QImage, QPixmap
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QImage, QMouseEvent, QPixmap
 from PySide6.QtWidgets import QCheckBox, QHBoxLayout, QLabel, QSlider, QVBoxLayout, QWidget
 
 from core.calibration.grid_overlay import draw_coordinate_axes, draw_dot_guide_lines
@@ -36,16 +36,33 @@ _ORIGIN_MARKER_COLOR_BGR = (255, 200, 0)  # 하늘색 계열 - 레드닷(빨강)
 _RED_DOT_MARKER_COLOR_BGR = (0, 0, 255)  # 레드닷 중심 표시: 빨간 점 하나
 
 
+class _ClickableImageLabel(QLabel):
+    """라벨 위 클릭 위치(라벨 로컬 좌표)를 그대로 알려주는 QLabel - 원본 프레임 좌표로의
+    역변환은 LiveFeedView가 담당한다(크롭/리사이즈 단계를 알고 있는 쪽이 LiveFeedView이므로)."""
+
+    clicked = Signal(float, float)
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802 - Qt override
+        self.clicked.emit(event.position().x(), event.position().y())
+
+
 class LiveFeedView(QWidget):
+    # 원본 프레임 좌표계 기준 클릭 위치 (x, y) - 캘리브레이션 모드에서만 발생(set_calibration_mode)
+    frame_clicked_px = Signal(float, float)
+
     def __init__(self, default_view_range_moa: float = 45.0, display_target_size: int = 1600, parent=None) -> None:
         super().__init__(parent)
         self._calibration: PixelAngleCalibration | None = None
         self._default_view_range_moa = default_view_range_moa
         self._display_target_size = display_target_size
+        self._calibration_mode = False  # True: 크롭/오버레이 없이 원본 전체 + 클릭 스냅 가능
+        self._last_display_size: tuple[int, int] | None = None
+        self._last_transform: tuple[float, float, float] | None = None
 
-        self._image_label = QLabel("카메라 대기 중...")
+        self._image_label = _ClickableImageLabel("카메라 대기 중...")
         self._image_label.setAlignment(Qt.AlignCenter)
         self._image_label.setMinimumSize(640, 480)
+        self._image_label.clicked.connect(self._on_image_clicked)
 
         self._zoom_slider = QSlider(Qt.Horizontal)
         self._zoom_slider.setRange(1, 5)
@@ -76,6 +93,37 @@ class LiveFeedView(QWidget):
 
     def set_calibration(self, calibration: PixelAngleCalibration) -> None:
         self._calibration = calibration
+
+    def set_calibration_mode(self, enabled: bool) -> None:
+        """캘리브레이션 탭이 활성화됐을 때 켠다 - 크롭/격자오버레이 없이 원본 프레임 전체를
+        보여주고(먼 tick도 클릭 가능해야 하므로), 클릭 시 frame_clicked_px로 원본 좌표를 알려준다."""
+        self._calibration_mode = enabled
+        if self._last_frame is not None:
+            self._render(self._last_frame, self._last_detection)
+
+    def _on_image_clicked(self, label_x: float, label_y: float) -> None:
+        if not self._calibration_mode or self._last_display_size is None:
+            return
+        disp_w, disp_h = self._last_display_size
+        label_w, label_h = self._image_label.width(), self._image_label.height()
+        if disp_w <= 0 or disp_h <= 0 or label_w <= 0 or label_h <= 0:
+            return
+
+        # QLabel.setPixmap(..., Qt.KeepAspectRatio)로 인한 letterbox 보정 (ClickableFrameLabel과 동일 원리)
+        label_scale = min(label_w / disp_w, label_h / disp_h)
+        offset_x = (label_w - disp_w * label_scale) / 2
+        offset_y = (label_h - disp_h * label_scale) / 2
+        disp_x = (label_x - offset_x) / label_scale
+        disp_y = (label_y - offset_y) / label_scale
+        if not (0 <= disp_x <= disp_w and 0 <= disp_y <= disp_h):
+            return  # letterbox 여백 클릭은 무시
+
+        if self._last_transform is None:
+            orig_x, orig_y = disp_x, disp_y
+        else:
+            x0, y0, scale = self._last_transform
+            orig_x, orig_y = disp_x / scale + x0, disp_y / scale + y0
+        self.frame_clicked_px.emit(orig_x, orig_y)
 
     def _on_grid_toggle(self, state: int) -> None:
         self._grid_overlay_enabled = bool(state)
@@ -116,7 +164,27 @@ class LiveFeedView(QWidget):
     def _render(self, frame_bgr: np.ndarray, detection: DetectionResult | None) -> None:
         profile = self._calibration.profile if self._calibration is not None else None
 
-        display, transform = self._crop_and_resize_around_origin(frame_bgr, profile)
+        if self._calibration_mode:
+            # 캘리브레이션은 먼 tick(예: ±35MOA 근처)도 클릭해야 하므로 크롭하지 않고 원본
+            # 전체를 보여준다 - 오버레이(격자/원점/레드닷/오차 텍스트)도 그리지 않는다.
+            display, transform = self._scale_to_display_size(frame_bgr)
+        else:
+            display, transform = self._crop_and_resize_around_origin(frame_bgr, profile)
+
+        self._last_display_size = (display.shape[1], display.shape[0])
+        self._last_transform = transform
+
+        if self._calibration_mode:
+            rgb = cv2.cvtColor(display, cv2.COLOR_BGR2RGB)
+            h, w, ch = rgb.shape
+            qimg = QImage(rgb.data, w, h, ch * w, QImage.Format_RGB888)
+            self._image_label.setPixmap(
+                QPixmap.fromImage(qimg).scaled(
+                    self._image_label.width(), self._image_label.height(), Qt.KeepAspectRatio, Qt.SmoothTransformation
+                )
+            )
+            return
+
         display_profile = self._transform_profile(profile, transform)
 
         dot_px_display: tuple[float, float] | None = None
@@ -190,6 +258,15 @@ class LiveFeedView(QWidget):
             display, text, (pad, h - pad), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (0, 255, 255), thickness
         )
         self._offset_label.setText(f"레드닷 오차: {text}")
+
+    def _scale_to_display_size(self, frame: np.ndarray) -> tuple[np.ndarray, tuple[float, float, float]]:
+        """캘리브레이션 모드용: 크롭 없이 원본 전체를 display_target_size에 맞게 비율 유지
+        축소만 한다(원거리 tick도 화면에 보이고 클릭 가능해야 하므로)."""
+        h, w = frame.shape[:2]
+        scale = self._display_target_size / max(w, h)
+        new_w, new_h = max(1, int(round(w * scale))), max(1, int(round(h * scale)))
+        resized = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+        return resized, (0.0, 0.0, scale)
 
     def _crop_and_resize_around_origin(
         self, frame: np.ndarray, profile: CalibrationProfile | None

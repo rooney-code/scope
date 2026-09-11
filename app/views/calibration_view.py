@@ -3,13 +3,15 @@
 작업자는 (1) '자동 검출'로 초기 원점/스케일을 얻고, (2) 화면에서 특정 tick을 클릭한 뒤
 그 tick이 나타내는 실제 값(mrad/MOA)을 입력해 스케일을 확정하거나, (3) 화살표 버튼으로
 원점을 1px 단위로 미세 조정한다.
+
+영상 자체는 이 위젯이 그리지 않는다 - 화면 좌측에 항상 떠 있는 공용 LiveFeedView가
+캘리브레이션 모드(크롭 없음 + 클릭 가능)로 전환되어 보여주고, 클릭 위치는
+LiveFeedView.frame_clicked_px 시그널을 통해 on_frame_clicked()로 전달된다
+(MainWindow가 연결). 이 위젯은 컨트롤 패널(버튼/폼)만 담당한다.
 """
 from __future__ import annotations
 
-import cv2
 import numpy as np
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QImage, QMouseEvent, QPixmap
 from PySide6.QtWidgets import (
     QComboBox,
     QDoubleSpinBox,
@@ -26,35 +28,6 @@ from core.calibration.grid_auto_detector import GridAutoDetector
 from core.calibration.pixel_angle_calibration import PixelAngleCalibration
 
 
-class ClickableFrameLabel(QLabel):
-    clicked_px = Signal(float, float)  # 원본 프레임 좌표계 기준 (x, y)
-
-    def __init__(self, parent=None) -> None:
-        super().__init__(parent)
-        self._frame_size: tuple[int, int] | None = None  # (w, h) of original frame
-        self.setAlignment(Qt.AlignCenter)
-        self.setMinimumSize(640, 480)
-
-    def set_frame_size(self, w: int, h: int) -> None:
-        self._frame_size = (w, h)
-
-    def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802 - Qt override
-        if self._frame_size is None or self.pixmap() is None:
-            return
-        label_w, label_h = self.width(), self.height()
-        frame_w, frame_h = self._frame_size
-
-        # KeepAspectRatio로 스케일된 pixmap이 QLabel 중앙에 배치되므로 letterbox 보정 필요
-        scale = min(label_w / frame_w, label_h / frame_h)
-        disp_w, disp_h = frame_w * scale, frame_h * scale
-        offset_x, offset_y = (label_w - disp_w) / 2, (label_h - disp_h) / 2
-
-        px = (event.position().x() - offset_x) / scale
-        py = (event.position().y() - offset_y) / scale
-        if 0 <= px <= frame_w and 0 <= py <= frame_h:
-            self.clicked_px.emit(px, py)
-
-
 class CalibrationView(QWidget):
     def __init__(self, calibration: PixelAngleCalibration, camera_id: str, parent=None) -> None:
         super().__init__(parent)
@@ -65,16 +38,13 @@ class CalibrationView(QWidget):
         self._last_frame: np.ndarray | None = None
         self._last_click_px: tuple[float, float] | None = None
 
-        self.frame_label = ClickableFrameLabel()
-        self.frame_label.clicked_px.connect(self._on_frame_clicked)
-
         self.status_label = QLabel("자동 검출을 실행하거나 이전 캘리브레이션을 불러오세요.")
 
         auto_btn = QPushButton("그리드 자동 검출")
         auto_btn.clicked.connect(self._on_auto_detect)
 
         # 클릭 스냅 폼
-        snap_group = QGroupBox("클릭 스냅 (화면에서 tick을 클릭한 뒤 값 입력)")
+        snap_group = QGroupBox("클릭 스냅 (좌측 영상에서 tick을 클릭한 뒤 값 입력)")
         self.snap_value = QDoubleSpinBox()
         self.snap_value.setRange(-1000, 1000)
         self.snap_value.setValue(10.0)
@@ -131,20 +101,14 @@ class CalibrationView(QWidget):
         load_btn = QPushButton("불러오기")
         load_btn.clicked.connect(self._on_load)
 
-        controls = QVBoxLayout()
-        controls.addWidget(auto_btn)
-        controls.addWidget(snap_group)
-        controls.addWidget(nudge_group)
-        controls.addWidget(scale_group)
-        controls.addLayout(self._hbox(save_btn, load_btn))
-        controls.addWidget(self.status_label)
-        controls.addStretch(1)
-
-        root = QHBoxLayout(self)
-        root.addWidget(self.frame_label, stretch=2)
-        controls_widget = QWidget()
-        controls_widget.setLayout(controls)
-        root.addWidget(controls_widget, stretch=1)
+        layout = QVBoxLayout(self)
+        layout.addWidget(auto_btn)
+        layout.addWidget(snap_group)
+        layout.addWidget(nudge_group)
+        layout.addWidget(scale_group)
+        layout.addLayout(self._hbox(save_btn, load_btn))
+        layout.addWidget(self.status_label)
+        layout.addStretch(1)
 
     @staticmethod
     def _hbox(*widgets) -> QHBoxLayout:
@@ -153,16 +117,9 @@ class CalibrationView(QWidget):
             box.addWidget(w)
         return box
 
-    # ---- 프레임 표시 ----
+    # ---- 프레임 캐시 (자동 검출용 - 화면 표시는 공용 LiveFeedView가 담당) ----
     def on_frame(self, frame_bgr: np.ndarray) -> None:
         self._last_frame = frame_bgr
-        h, w = frame_bgr.shape[:2]
-        self.frame_label.set_frame_size(w, h)
-        rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-        qimg = QImage(rgb.data, w, h, 3 * w, QImage.Format_RGB888)
-        self.frame_label.setPixmap(
-            QPixmap.fromImage(qimg).scaled(self.frame_label.width(), self.frame_label.height(), Qt.KeepAspectRatio)
-        )
 
     # ---- 액션 ----
     def _on_auto_detect(self) -> None:
@@ -176,7 +133,8 @@ class CalibrationView(QWidget):
         self.calibration.seed_from_auto_detection(self.camera_id, result)
         self.status_label.setText(f"자동 검출 완료: 원점={result.origin_px}. 이제 tick 클릭으로 스케일을 확정하세요.")
 
-    def _on_frame_clicked(self, x: float, y: float) -> None:
+    def on_frame_clicked(self, x: float, y: float) -> None:
+        """공용 LiveFeedView가 캘리브레이션 모드에서 클릭된 원본 프레임 좌표를 알려줄 때 호출."""
         self._last_click_px = (x, y)
         self.snap_click_label.setText(f"클릭된 위치: ({x:.1f}, {y:.1f})")
 
