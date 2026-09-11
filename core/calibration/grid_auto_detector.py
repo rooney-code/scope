@@ -78,8 +78,21 @@ class GridAutoDetector:
         if not horizontals or not verticals:
             return GridDetectionResult(found=False)
 
-        origin_y, h_angle = self._cluster_axis_position(horizontals, coord_index=(2, 4))
-        origin_x, v_angle = self._cluster_axis_position(verticals, coord_index=(1, 3))
+        # 단순 평균이 아니라 직선 피팅(최소자승)으로 각 축의 기울기까지 반영해 교차점을 구한다.
+        # 카메라/타겟판 설치가 완벽히 수평/수직이 아니면(약간의 회전) 세로축이 살짝 기울어
+        # 보일 수 있는데, 평균만 쓰면 이런 기울어짐을 무시해 원점이 미세하게 어긋날 수 있음.
+        h_slope, h_intercept = self._fit_line(horizontals)  # y = h_slope * x + h_intercept
+        v_slope, v_intercept = self._fit_line(verticals)  # x = v_slope * y + v_intercept
+
+        # 두 직선의 실제 교차점을 연립방정식으로 계산
+        denom = 1 - h_slope * v_slope
+        if abs(denom) < 1e-9:
+            return GridDetectionResult(found=False)
+        origin_x = (v_slope * h_intercept + v_intercept) / denom
+        origin_y = h_slope * origin_x + h_intercept
+
+        h_angle = float(np.degrees(np.arctan(h_slope)))
+        v_angle = float(np.degrees(np.arctan(v_slope)) + 90.0 if v_slope >= 0 else np.degrees(np.arctan(v_slope)) - 90.0)
 
         tick_x = self._detect_ticks(gray, axis="x", axis_coord=origin_y)
         tick_y = self._detect_ticks(gray, axis="y", axis_coord=origin_x)
@@ -94,19 +107,39 @@ class GridAutoDetector:
         )
 
     @staticmethod
-    def _cluster_axis_position(candidates: list[tuple], coord_index: tuple[int, int]) -> tuple[float, float]:
-        """가장 긴 직선 하나만 쓰지 않고, 그 직선과 가까운(±5px) 위치의 다른 조각들을 함께
-        평균 내어 더 안정적인 축 위치를 구한다 - 실제 사진에서는 십자선이 tick/라벨 텍스트에
-        가려 여러 짧은 조각으로 끊겨 검출되는 경우가 많아 이렇게 하는 편이 더 정확함.
+    def _fit_line(candidates: list[tuple]) -> tuple[float, float]:
+        """후보 선분들(가장 긴 것 + 그 근방 ±8px 이내의 조각들)의 양 끝점을 모두 모아
+        최소자승으로 직선을 피팅한다. 수평선은 y=f(x), 수직선은 x=f(y) 형태로 피팅해
+        수직선이 90도에 가깝더라도(기울기 무한대 문제 없이) 안정적으로 처리한다.
+
+        candidates 튜플 형식: (length, x1, y1, x2, y2, angle) - x1,y1,x2,y2가 두 끝점.
+        같은 x1,y1,x2,y2,angle 필드를 수평/수직 후보 모두에 공통으로 사용하되, 어느 축을
+        기준으로 피팅할지는 angle로 판단(수평 후보는 45도 미만, 수직 후보는 45도 이상).
         """
         candidates_sorted = sorted(candidates, key=lambda t: t[0], reverse=True)
         longest = candidates_sorted[0]
-        ref_pos = (longest[coord_index[0]] + longest[coord_index[1]]) / 2.0
+        is_horizontal = abs(longest[5]) < 45
 
-        nearby = [c for c in candidates_sorted if abs((c[coord_index[0]] + c[coord_index[1]]) / 2.0 - ref_pos) <= 5]
-        avg_pos = float(np.mean([(c[coord_index[0]] + c[coord_index[1]]) / 2.0 for c in nearby]))
-        avg_angle = float(np.mean([c[5] for c in nearby]))
-        return avg_pos, avg_angle
+        ref_pos = (
+            (longest[2] + longest[4]) / 2.0 if is_horizontal else (longest[1] + longest[3]) / 2.0
+        )
+        nearby = [
+            c
+            for c in candidates_sorted
+            if abs(((c[2] + c[4]) / 2.0 if is_horizontal else (c[1] + c[3]) / 2.0) - ref_pos) <= 8
+        ]
+
+        xs: list[float] = []
+        ys: list[float] = []
+        for _, x1, y1, x2, y2, _ in nearby:
+            xs.extend([x1, x2])
+            ys.extend([y1, y2])
+
+        if is_horizontal:
+            slope, intercept = np.polyfit(xs, ys, 1)  # y = slope*x + intercept
+        else:
+            slope, intercept = np.polyfit(ys, xs, 1)  # x = slope*y + intercept
+        return float(slope), float(intercept)
 
     def _detect_ticks(self, gray: np.ndarray, axis: str, axis_coord: float) -> list[float]:
         """축 선 바로 옆(수직 오프셋)의 얇은 띠에서 어두운 tick 돌출부의 위치를 찾는다.

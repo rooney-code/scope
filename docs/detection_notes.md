@@ -44,3 +44,36 @@ min_blob_area = 15            # px^2, 실기에서 재조정
   계획대로 클릭 스냅/화살표 미세조정을 통한 수동 확정이 필요.
 - 재현 방법: `PYTHONPATH=. python3 scripts/detect_on_real_images.py` (결과는
   `tests/test_images/results/`에 저장됨).
+
+## 실제 LiveFeedView 화면 렌더링 검증 (2026-09-11, 2차)
+
+`scripts/detect_on_real_images.py`의 `draw_overlay()`는 검증 전용 별도 시각화 코드였고
+실제 앱 화면과 다르다는 점이 확인되어(굵은 십자선/레드닷 윤곽선 등), **실제 `app/views/live_feed_view.py`의
+`LiveFeedView`를 그대로 오프스크린으로 렌더링**해서 재검증했다: `scripts/render_live_view_demo.py`.
+이 스크립트가 만드는 `tests/test_images/results/liveview_*.png`가 실제 프로그램 화면과 100% 동일한
+렌더링 결과다 (`1_*.jpg`/`2_*.jpg`/`3_*.jpg`는 순수 검출 품질 확인용 별도 시각화이며 실제 화면
+모습은 아님).
+
+과정에서 나온 개선/버그 수정:
+- **원점 정밀도**: 가장 긴 직선 하나의 중점만 쓰지 않고, 인접 선분들의 양 끝점을 모두 모아
+  최소자승 직선 피팅 후 두 축의 교차점을 계산하도록 `GridAutoDetector._fit_line()`을 추가
+  (세로축이 살짝 기울어 보인다는 피드백에 대응 - 실측 결과 이 사진에서는 전체 높이 기준
+  0.2px 수준으로 사실상 완전 수직이었고, 이전 확인 이미지의 "기울어짐"은 검증 스크립트가
+  그린 굵은 오버레이 선의 시각적 착시였던 것으로 판단됨).
+- **오버레이 단순화**: 사용자 피드백에 따라 긴 크로스헤어 선은 그리지 않고, 원점/레드닷
+  모두 작은 마커만 표시하도록 변경. 레드닷도 윤곽선 대신 중심점만 표시.
+- **격자형 그리드 사용자 토글**: `LiveFeedView`에 체크박스 추가, `draw_moa_grid_overlay()`
+  (프로덕션 코드, 기존에도 존재했으나 UI에 노출되어 있지 않았음)를 사용. 간격을 1MOA
+  고정값 대신 현재 확대 범위에 맞춰 화면당 대략 10줄 안팎이 되도록 자동 조절
+  (`LiveFeedView._current_grid_step_moa()`) - 카메라 배율에 따라 1MOA 고정이면
+  체크무늬처럼 지나치게 촘촘해지는 문제가 있었음.
+- **좌우/상하 MOA 오차 표시**: 화면 좌하단에 표시. **주의**: `cv2.putText`는 한글을 지원하지
+  않아(Hershey 폰트에 한글 글리프가 없음) 깨져서 나오므로, 이 오버레이 텍스트는 한글 대신
+  `R`/`L`/`U`/`D` 같은 영문 라벨만 사용한다(반면 `self._offset_label`은 일반 Qt 위젯이라
+  한글 정상 표시 - Qt의 텍스트 렌더링과 OpenCV `putText`의 폰트 지원 범위가 다르다는 점에 주의).
+- **px_per_moa는 카메라별 재조정 가능**: 이 문서/데모 스크립트에 등장하는 9.2px/MOA는
+  이 한 장의 예시 사진을 기준으로 한 임시 측정값이며 코드에 상수로 고정되어 있지 않다.
+  실제 프로그램에서는 카메라(장비)마다 캘리브레이션 화면(자동검출 + 클릭스냅/화살표
+  미세조정)에서 사용자가 직접 확정/재조정하고, `PixelAngleCalibration.save()/load()`로
+  카메라 식별자별 프로파일로 영속화된다.
+- 재현 방법: `QT_QPA_PLATFORM=offscreen PYTHONPATH=. python3 scripts/render_live_view_demo.py`

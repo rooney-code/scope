@@ -40,7 +40,6 @@ class InspectionViewModel(QObject):
         self.state_machine = TravelTestStateMachine(settings.stage2)
 
         self.scope_id: str | None = None
-        self._grid_overlay_enabled = False
 
         self.frame_bus.subscribe(self._on_frame)
 
@@ -53,9 +52,6 @@ class InspectionViewModel(QObject):
     def stop_camera(self) -> None:
         self.camera.stop()
         self.camera.close()
-
-    def set_grid_overlay_enabled(self, enabled: bool) -> None:
-        self._grid_overlay_enabled = enabled
 
     # ---- 시험 시작 게이트 ----
     def can_start_inspection(self) -> bool:
@@ -102,13 +98,11 @@ class InspectionViewModel(QObject):
 
     # ---- 프레임 처리 ----
     def _on_frame(self, frame_bgr: np.ndarray) -> None:
-        display_frame = frame_bgr
-        if self._grid_overlay_enabled and self.calibration.profile is not None:
-            from core.calibration.grid_overlay import draw_moa_grid_overlay
-
-            display_frame = draw_moa_grid_overlay(frame_bgr, self.calibration.profile)
-
-        self.frame_ready.emit(display_frame)
+        # 원본 프레임을 그대로 내보낸다 - 격자 오버레이/원점·레드닷 마커/크롭은 각 View가
+        # 자신의 용도에 맞게 그린다(예: LiveFeedView는 격자 토글+원점 크롭, CalibrationView는
+        # 원본 그대로 보여줌). 뷰모델이 프레임 자체를 가공하면 다른 View에도 영향을 주게 되어
+        # 여기서는 순수 전달만 담당한다.
+        self.frame_ready.emit(frame_bgr)
 
         candidates = self.detector.detect(frame_bgr)
         result: DetectionResult = self.tracker.select(candidates)
