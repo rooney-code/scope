@@ -45,8 +45,9 @@ def main() -> int:
 
     viewmodel = InspectionViewModel(camera, settings)
     window = MainWindow(viewmodel, camera_id=args.device_serial or "default")
-    window.resize(1400, 900)
-    window.show()
+    # 작업표시줄이 있는 상태에서 최대화(풀스크린이 아님) - FHD 모니터 기준 대략 1920x1000
+    # 정도의 사용 가능 영역이 되며, showMaximized()가 OS에 맞는 실제 작업 영역을 알아서 계산함
+    window.showMaximized()
 
     viewmodel.start_camera()
 

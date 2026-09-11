@@ -1,9 +1,12 @@
 """레드닷(조준경 조사점) 검출기.
 
 - 순수 빨강이 아니라 호박색(amber)에 가까운 색상 (docs/detection_notes.md 참고).
-- 중심 부근에서는 원형에 가깝지만 이동 범위 끝(예: 35MOA 부근)에서는 타원형으로 왜곡될 수 있음
-  -> cv2.fitEllipse로 형상을 구하고, 중심점은 마스크의 무게중심(모멘트)으로 계산해 원형/타원형 모두
-     동일하게 처리한다.
+- 중심 부근에서는 원형에 가깝지만 이동 범위 끝(예: 35MOA 부근)에서는 단순 타원형이 아니라
+  "코멧테일"(밝은 머리 + 중심 반대쪽으로 흐려지는 꼬리) 형태로 왜곡될 수 있음 - 레티클과
+  반사렌즈 간 거리/발산각이 달라지는 제품 구조상의 광학 특성(실측 영상으로 고객이 확인,
+  docs/detection_notes.md 참고). 이진 마스크의 단순 무게중심(모든 픽셀 동일 가중치)은 꼬리
+  쪽으로 중심이 쏠리므로, 밝기로 가중치를 준 무게중심을 사용해 밝은 "머리" 부분이 중심 계산을
+  지배하도록 한다(_intensity_weighted_centroid).
 """
 from __future__ import annotations
 
@@ -44,6 +47,7 @@ class RedDotDetector:
         mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
         mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
 
+        value_channel = hsv[..., 2]
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
         results: list[DetectionResult] = []
@@ -55,8 +59,10 @@ class RedDotDetector:
             moments = cv2.moments(contour)
             if moments["m00"] == 0:
                 continue
-            cx = moments["m10"] / moments["m00"]
-            cy = moments["m01"] / moments["m00"]
+
+            center = self._intensity_weighted_centroid(contour, mask, value_channel, s.centroid_intensity_power)
+            if center is None:
+                center = (moments["m10"] / moments["m00"], moments["m01"] / moments["m00"])
 
             ellipse = None
             if len(contour) >= 5:
@@ -65,7 +71,7 @@ class RedDotDetector:
             results.append(
                 DetectionResult(
                     found=True,
-                    center_px=(cx, cy),
+                    center_px=center,
                     ellipse=ellipse,
                     contour=contour,
                     area_px2=area,
@@ -74,6 +80,35 @@ class RedDotDetector:
 
         results.sort(key=lambda r: r.area_px2, reverse=True)
         return results
+
+    @staticmethod
+    def _intensity_weighted_centroid(
+        contour: np.ndarray, mask: np.ndarray, value_channel: np.ndarray, power: float
+    ) -> tuple[float, float] | None:
+        """윤곽선 영역 내부만 밝기(V채널)로 가중치를 준 무게중심 - "코멧테일" 꼬리(어두움)보다
+        밝은 머리 쪽에 더 큰 가중치를 줘서 중심이 꼬리로 쏠리는 것을 억제한다. power<=0이면
+        가중치 없이(균등) 계산해 기존 이진 무게중심과 동일해진다."""
+        x, y, w, h = cv2.boundingRect(contour)
+        if w <= 0 or h <= 0:
+            return None
+
+        local_mask = np.zeros((h, w), dtype=np.uint8)
+        cv2.drawContours(local_mask, [contour], -1, 255, thickness=cv2.FILLED, offset=(-x, -y))
+        local_mask = cv2.bitwise_and(local_mask, mask[y : y + h, x : x + w])
+
+        weights = (local_mask > 0).astype(np.float64)
+        if power > 0:
+            brightness = value_channel[y : y + h, x : x + w].astype(np.float64) / 255.0
+            weights *= np.power(brightness, power)
+
+        total = weights.sum()
+        if total <= 0:
+            return None
+
+        ys, xs = np.mgrid[0:h, 0:w]
+        cx = float((xs * weights).sum() / total) + x
+        cy = float((ys * weights).sum() / total) + y
+        return (cx, cy)
 
     def detect_best(self, frame_bgr: np.ndarray) -> DetectionResult:
         """가장 큰 블롭 하나만 반환 (연속성 게이팅이 필요 없는 단순한 경우)."""

@@ -71,6 +71,14 @@ class DetectionSettings:
     hsv_upper2: tuple[int, int, int] = (4, 255, 255)
     min_blob_area: float = 15.0
     max_blob_jump_px: float = 60.0  # BlobTracker 게이팅, 현장 튜닝 필요
+    # 레티클 구조상 중심에서 멀어질수록(특히 35MOA 근처) 레드닷이 원형에서 "코멧테일"
+    # 형태(밝은 머리 + 중심 반대쪽으로 흐려지는 꼬리)로 변형됨 - 실측 영상으로 확인된 제품
+    # 특성(docs/detection_notes.md 참고). 윤곽선 전체를 동일 가중치로 취급하는 단순 무게중심은
+    # 꼬리 쪽으로 쏠려 중심점이 밀리므로, 밝기로 가중치를 줘서 밝은 "머리" 부분이 중심 계산을
+    # 지배하도록 한다. centroid_intensity_power를 올릴수록 꼬리의 영향이 더 억제됨(1.0=밝기
+    # 그대로 가중, 커질수록 밝은 부분에 더 집중). 0으로 두면 기존 방식(이진 마스크 무게중심)과
+    # 동일해짐.
+    centroid_intensity_power: float = 2.0
 
 
 @dataclass
