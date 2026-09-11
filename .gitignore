@@ -6,3 +6,6 @@ __pycache__/
 venv/
 calibration_profiles/
 settings.local.json
+build/
+dist/
+*.spec.bak
