@@ -299,6 +299,82 @@ def test_finalize_locks_out_further_retest():
         m.retest_direction(TravelDirection.UP)
 
 
+def test_start_direction_lets_any_direction_go_in_any_order():
+    """start_direction()은 순서 큐 없이 어떤 방향이든 바로 시작할 수 있다 - configure() 없이도
+    동작(기본 계획 방향 = 4방향 전체)."""
+    m = _make_machine()
+    assert m.start_direction(TravelDirection.RIGHT) == TravelDirection.RIGHT
+    assert m.phase == Phase.OUTBOUND
+    assert m.current_direction == TravelDirection.RIGHT
+
+
+def test_starting_different_direction_discards_in_progress_attempt_without_recording():
+    """좌 시험 진행 중 우 시작을 누르면: 좌의 미완성 진행 데이터는 그냥 버려지고(기록 없음),
+    우가 새로 시작된다 - 동시 진행 불가 + 재시작 전 항상 원점 복귀가 필요하므로 부분 기록은
+    의미가 없다는 사용자 요구사항."""
+    m = _make_machine()
+    m.start_direction(TravelDirection.LEFT)
+    _feed_ramp(m, x_values=[-5, -10, -15], y_values=[0, 0, 0])  # 좌 진행 중(미완성)
+
+    m.start_direction(TravelDirection.RIGHT)  # 좌를 중간에 버리고 우로 전환
+
+    assert m.current_direction == TravelDirection.RIGHT
+    assert m.phase == Phase.OUTBOUND
+    assert m.direction_results == []  # 좌의 미완성 데이터는 기록되지 않음
+
+
+def test_free_order_mode_one_failure_does_not_block_other_directions():
+    """자유 순서 모드에서는 한 방향이 불량이어도 다른 방향을 계속 시작할 수 있고, 계획된
+    4방향이 모두 시도되어야 전체 종료로 간주된다."""
+    m = _make_machine()  # stop_on_failure_scope="entire_inspection" (기본값)이어도 무시됨
+    m.start_direction(TravelDirection.UP)
+
+    # UP: 이동량 미달로 불량
+    t = _feed_ramp(m, x_values=[0] * 4, y_values=[0, 5, 10, 15])
+    _feed_hold(m, x=0, y=15, n=6, t0=t)
+    m.mark_far_point_reached()
+
+    assert m.direction_results[-1].verdict == Verdict.FAIL
+    assert m.phase == Phase.DIRECTION_DONE  # 전체 종료로 안 넘어감(자유 순서 모드)
+    assert not m.is_ready_to_finalize
+
+    # UP이 불량이었어도 DOWN/LEFT/RIGHT를 자유롭게 시작 가능
+    for direction, y_sign in [(TravelDirection.DOWN, -1), (TravelDirection.LEFT, -1), (TravelDirection.RIGHT, 1)]:
+        assert m.start_direction(direction) == direction
+        if direction in (TravelDirection.DOWN, TravelDirection.UP):
+            t = _feed_ramp(m, x_values=[0] * 8, y_values=[y_sign * i * 5 for i in range(8)])
+            t = _feed_hold(m, x=0, y=y_sign * 35, n=6, t0=t)
+            t = _feed_ramp(m, x_values=[0] * 8, y_values=[y_sign * (35 - i * 5) for i in range(8)])
+            _feed_hold(m, x=0, y=0, n=6, t0=t)
+        else:
+            t = _feed_ramp(m, x_values=[y_sign * i * 5 for i in range(8)], y_values=[0] * 8)
+            t = _feed_hold(m, x=y_sign * 35, y=0, n=6, t0=t)
+            t = _feed_ramp(m, x_values=[y_sign * (35 - i * 5) for i in range(8)], y_values=[0] * 8)
+            _feed_hold(m, x=0, y=0, n=6, t0=t)
+
+    assert m.phase == Phase.INSPECTION_DONE
+    assert m.is_ready_to_finalize
+    assert m.overall_verdict == Verdict.FAIL  # UP 불량이 남아있으므로 전체는 불량
+    assert len(m.direction_results) == 4
+
+
+def test_start_direction_on_completed_direction_discards_old_record_like_retest():
+    m = _make_machine()
+    m.start_direction(TravelDirection.UP)
+    t = _feed_ramp(m, x_values=[0] * 4, y_values=[0, 5, 10, 15])
+    _feed_hold(m, x=0, y=15, n=6, t0=t)
+    m.mark_far_point_reached()
+    assert m.direction_results[-1].verdict == Verdict.FAIL
+
+    m.start_direction(TravelDirection.UP)  # 같은 박스를 다시 누름 = 재시작
+    assert m.direction_results == []  # 이전 불량 기록은 즉시 사라짐
+    t = _feed_ramp(m, x_values=[0] * 8, y_values=[i * 5 for i in range(8)])
+    t = _feed_hold(m, x=0, y=35, n=6, t0=t)
+    t = _feed_ramp(m, x_values=[0] * 8, y_values=[35 - i * 5 for i in range(8)])
+    _feed_hold(m, x=0, y=0, n=6, t0=t)
+    assert m.direction_results[-1].verdict == Verdict.PASS
+
+
 def test_finalize_before_all_directions_done_raises():
     m = _make_machine()
     m.configure([TravelDirection.UP, TravelDirection.DOWN])

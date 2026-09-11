@@ -45,11 +45,19 @@ class TravelTestStateMachine:
         )
 
         self.direction_queue: list[TravelDirection] = []
-        self._planned_directions: list[TravelDirection] = []  # 재시험 시 남은 미완료 방향 복원용
+        # 방향별 박스 UI(start_direction())는 순서 큐 없이 4방향을 언제든 자유롭게 시작하므로,
+        # 기본값은 항상 4방향 전체 - configure()를 명시적으로 호출하면(기존 순서 큐 흐름) 그
+        # 목록으로 덮어써진다.
+        self._planned_directions: list[TravelDirection] = list(TravelDirection)
         self.current_direction: TravelDirection | None = None
         self.phase: Phase = Phase.IDLE
         self.overall_verdict: Verdict = Verdict.IN_PROGRESS
         self.finalized: bool = False  # "시험 종료"(DB 저장) 버튼을 누르면 True - 이후 재시험 불가
+        # True: configure()+start_next_direction()의 "순서 큐" 흐름(기존 테스트가 검증하는
+        # 동작 - 실패 시 stop_on_failure_scope에 따라 즉시 전체 종료 가능).
+        # False: start_direction()으로 어떤 순서로든 자유롭게 진행하는 방향별 박스 UI 흐름 -
+        # 한 방향의 불량이 다른 방향 진행을 막지 않고, 계획된 방향이 모두 시도되면 종료로 간주.
+        self._sequential_queue_mode: bool = True
 
         self.direction_results: list[DirectionTestResult] = []
         self._attempt_counters: dict[TravelDirection, int] = {}
@@ -68,6 +76,7 @@ class TravelTestStateMachine:
             raise RuntimeError("검사가 진행 중일 때는 방향 큐를 재구성할 수 없습니다. abort 또는 완료 후 사용하세요.")
         self.direction_queue = list(directions)
         self._planned_directions = list(directions)
+        self._sequential_queue_mode = True
         self.current_direction = None
         self.phase = Phase.IDLE
         self.overall_verdict = Verdict.IN_PROGRESS
@@ -88,6 +97,31 @@ class TravelTestStateMachine:
         self.phase = Phase.OUTBOUND
         return self.current_direction
 
+    def start_direction(self, direction: TravelDirection) -> TravelDirection:
+        """방향별 박스의 "시작/재시작" 버튼 - 순서 큐와 무관하게, 어떤 방향이든 언제든 (재)시작
+        한다. 동시에 두 방향을 진행할 수 없고 재시작 전에는 항상 원점으로 이동해야 하므로,
+        다른 방향이 진행 중이었다면 그 미완성 기록은 그대로 버려진다(사용자 확인: 부분 기록은
+        의미가 없음 - 저장되지 않음). 이미 완료된 방향이면 그 기록도 지우고 재시험으로 취급한다
+        (retest_direction()과 동일 정책). 이후 이 인스턴스는 "자유 순서" 모드로 동작해,
+        stop_on_failure_scope와 무관하게 한 방향의 불량이 다른 방향 시작을 막지 않는다."""
+        if self.finalized:
+            raise RuntimeError("이미 시험 종료(저장)된 검사는 다시 시작할 수 없습니다.")
+        if self.current_direction is not None and self.current_direction != direction:
+            self._reset_direction_buffers()  # 다른 방향의 미완성 진행분은 그냥 버림(기록 없음)
+
+        self.direction_results = [r for r in self.direction_results if r.direction != direction]
+        if direction not in self._planned_directions:
+            self._planned_directions.append(direction)
+        if direction in self.direction_queue:
+            self.direction_queue.remove(direction)
+
+        self._sequential_queue_mode = False
+        self.current_direction = direction
+        self._reset_direction_buffers()
+        self.phase = Phase.OUTBOUND
+        self.overall_verdict = Verdict.IN_PROGRESS
+        return direction
+
     def restart_current_direction(self) -> None:
         """현재 방향을 처음부터 재시작 (교정 등 조치 후). 진행 중 버퍼만 초기화."""
         if self.current_direction is None:
@@ -98,7 +132,8 @@ class TravelTestStateMachine:
     def restart_all(self) -> None:
         """전체 검사를 처음부터 재시작 (같은 scope 기준, 방향 큐/결과 모두 초기화)."""
         self.direction_queue = []
-        self._planned_directions = []
+        self._planned_directions = list(TravelDirection)
+        self._sequential_queue_mode = True
         self.current_direction = None
         self.direction_results = []
         self._attempt_counters = {}
@@ -309,14 +344,26 @@ class TravelTestStateMachine:
         self.current_direction = None
         self.phase = Phase.DIRECTION_DONE
 
-        if verdict == Verdict.FAIL and self.settings.stop_on_failure_scope == "entire_inspection":
-            self.direction_queue = []
-            self.overall_verdict = Verdict.FAIL
-            self.phase = Phase.INSPECTION_DONE
-        elif not self.direction_queue:
-            self.overall_verdict = (
-                Verdict.PASS
-                if all(r.verdict == Verdict.PASS for r in self.direction_results)
-                else Verdict.FAIL
-            )
-            self.phase = Phase.INSPECTION_DONE
+        if self._sequential_queue_mode:
+            if verdict == Verdict.FAIL and self.settings.stop_on_failure_scope == "entire_inspection":
+                self.direction_queue = []
+                self.overall_verdict = Verdict.FAIL
+                self.phase = Phase.INSPECTION_DONE
+            elif not self.direction_queue:
+                self.overall_verdict = (
+                    Verdict.PASS
+                    if all(r.verdict == Verdict.PASS for r in self.direction_results)
+                    else Verdict.FAIL
+                )
+                self.phase = Phase.INSPECTION_DONE
+        else:
+            # 자유 순서(방향별 박스) 모드: 한 방향의 불량이 다른 방향 시작을 막지 않음 - 계획된
+            # 방향이 모두 시도되어야 전체 종료로 간주(그때까지는 어떤 박스든 계속 (재)시작 가능).
+            attempted = {r.direction for r in self.direction_results}
+            if set(self._planned_directions) <= attempted:
+                self.overall_verdict = (
+                    Verdict.PASS
+                    if all(r.verdict == Verdict.PASS for r in self.direction_results)
+                    else Verdict.FAIL
+                )
+                self.phase = Phase.INSPECTION_DONE
