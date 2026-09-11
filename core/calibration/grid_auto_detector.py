@@ -159,64 +159,90 @@ class GridAutoDetector:
             slope, intercept = np.polyfit(ys, xs, 1)  # x = slope*y + intercept
         return float(slope), float(intercept)
 
-    @staticmethod
+    @classmethod
     def _refine_axis_line(
+        cls,
         gray: np.ndarray,
         axis: str,
         approx_coord: float,
         scan_start: int,
         scan_end: int,
-        search_radius: int = 15,
-        step: int = 10,
+        search_radius: int = 10,
+        step: int = 5,
+        iterations: int = 3,
     ) -> tuple[float | None, float | None]:
         """대략적인 축 위치(approx_coord) 근방을 촘촘히 스캔하며, 각 스캔 라인에서 밝기의
         가중 무게중심(어두울수록 가중치 높음)으로 축 선의 서브픽셀 위치를 구한 뒤, 그 점들로
-        다시 직선을 피팅한다(1차 이상치 제거 포함). Hough 선분 끝점(정수 픽셀)보다 훨씬
-        정밀하다 - 실측 결과 4~5px(약 0.5MOA) 정도 더 정확했음.
+        다시 직선을 피팅한다. Hough 선분 끝점(정수 픽셀)보다 훨씬 정밀하다.
+
+        두 가지를 추가로 처리한다(실측 검증으로 필요성이 확인됨):
+        - **배경 기울기 제거(detrend)**: 사진에 비네팅(가장자리로 갈수록 어두워짐)이 있어
+          탐색 구간 양 끝의 밝기가 다르면 무게중심이 실제 선 위치에서 밀리는 문제가 있었음 -
+          각 스캔 라인에서 양 끝 몇 개 값으로 선형 배경을 추정해 제거한 뒤 무게중심을 구함.
+        - **반복(iteration)**: 첫 근사 위치가 실제 위치에서 조금 떨어져 있으면 탐색창이
+          비대칭적으로 배경을 포함해 결과가 근사 위치에 따라 흔들렸음 - 구한 위치를 다음
+          반복의 중심으로 다시 사용해 수렴시킨다(보통 2~3회면 충분).
 
         axis="vertical": 여러 y에서 x를 찾아 x = slope*y + intercept 반환.
         axis="horizontal": 여러 x에서 y를 찾아 y = slope*x + intercept 반환.
         실패 시 (None, None).
         """
-        primary: list[float] = []  # scan 좌표 (y for vertical, x for horizontal)
-        secondary: list[float] = []  # 찾아낸 축 좌표 (x for vertical, y for horizontal)
+        coord = approx_coord
+        slope, intercept = None, None
 
-        for scan_pos in range(scan_start, scan_end, step):
-            if axis == "vertical":
-                lo = int(approx_coord) - search_radius
-                hi = int(approx_coord) + search_radius
-                line = gray[scan_pos, lo:hi].astype(float)
-            else:
-                lo = int(approx_coord) - search_radius
-                hi = int(approx_coord) + search_radius
-                line = gray[lo:hi, scan_pos].astype(float)
+        for _ in range(iterations):
+            primary: list[float] = []  # scan 좌표 (y for vertical, x for horizontal)
+            secondary: list[float] = []  # 찾아낸 축 좌표 (x for vertical, y for horizontal)
 
-            if line.size == 0:
-                continue
-            inv = line.max() - line
-            if inv.sum() < 5:  # 대비가 거의 없으면(노이즈) 스킵
-                continue
-            local_pos = float(np.sum(inv * np.arange(len(line))) / np.sum(inv))
-            primary.append(scan_pos)
-            secondary.append(lo + local_pos)
+            for scan_pos in range(scan_start, scan_end, step):
+                lo, hi = int(coord) - search_radius, int(coord) + search_radius
+                if axis == "vertical":
+                    line = gray[scan_pos, lo:hi].astype(float)
+                else:
+                    line = gray[lo:hi, scan_pos].astype(float)
 
-        if len(primary) < 10:
-            return None, None
+                local_pos = cls._weighted_dark_centroid(line)
+                if local_pos is None:
+                    continue
+                primary.append(scan_pos)
+                secondary.append(lo + local_pos)
 
-        primary_arr = np.array(primary)
-        secondary_arr = np.array(secondary)
-        slope, intercept = np.polyfit(primary_arr, secondary_arr, 1)
+            if len(primary) < 10:
+                return None, None
 
-        # 이상치 제거 후 재피팅 (한 번의 sigma-clipping으로 충분 - 텍스트 라벨 등으로 인한
-        # 국소적 튐 방지)
-        residual = secondary_arr - (slope * primary_arr + intercept)
-        std = residual.std()
-        if std > 1e-6:
-            mask = np.abs(residual) < 2 * std
-            if mask.sum() >= 10:
-                slope, intercept = np.polyfit(primary_arr[mask], secondary_arr[mask], 1)
+            primary_arr = np.array(primary)
+            secondary_arr = np.array(secondary)
+            slope, intercept = np.polyfit(primary_arr, secondary_arr, 1)
+
+            # 이상치 제거 후 재피팅 (텍스트 라벨 등으로 인한 국소적 튐 방지)
+            residual = secondary_arr - (slope * primary_arr + intercept)
+            std = residual.std()
+            if std > 1e-6:
+                mask = np.abs(residual) < 2 * std
+                if mask.sum() >= 10:
+                    slope, intercept = np.polyfit(primary_arr[mask], secondary_arr[mask], 1)
+
+            mid_scan = (scan_start + scan_end) / 2.0
+            coord = slope * mid_scan + intercept  # 다음 반복은 이번 결과를 중심으로 재탐색
 
         return float(slope), float(intercept)
+
+    @staticmethod
+    def _weighted_dark_centroid(line: np.ndarray) -> float | None:
+        """1차원 밝기 프로파일에서, 양 끝의 선형 배경(비네팅 등)을 제거한 뒤 어두운 정도를
+        가중치로 한 무게중심(서브픽셀 위치, 0-based index)을 구한다. 대비가 거의 없으면 None."""
+        if line.size < 7:
+            return None
+        idx = np.arange(len(line))
+        edge_n = 3
+        edge_idx = np.concatenate([idx[:edge_n], idx[-edge_n:]])
+        edge_val = np.concatenate([line[:edge_n], line[-edge_n:]])
+        slope, intercept = np.polyfit(edge_idx, edge_val, 1)
+        baseline = slope * idx + intercept
+        inv = np.clip(baseline - line, 0, None)  # 배경보다 어두운 만큼만 가중치로 사용
+        if inv.sum() < 3:
+            return None
+        return float(np.sum(inv * idx) / np.sum(inv))
 
     def _detect_ticks(self, gray: np.ndarray, axis: str, axis_coord: float) -> list[float]:
         """축 선 바로 옆(수직 오프셋)의 얇은 띠에서 어두운 tick 돌출부의 위치를 찾는다.

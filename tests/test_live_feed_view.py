@@ -97,20 +97,20 @@ def test_zoom_level_narrows_view_range():
     assert view._current_view_range_moa() == pytest.approx(15.0)
 
 
-def test_grid_step_picks_a_readable_spacing_not_1moa():
+def test_axis_tick_step_picks_a_readable_spacing_not_1moa():
     """카메라 배율이 높으면(px_per_moa가 커서 view_range가 넓게 느껴지는 경우) 1MOA 간격
-    격자는 체크무늬처럼 너무 촘촘해진다 - 화면당 대략 10줄 안팎이 되는 '보기 좋은' 간격
+    눈금은 너무 촘촘해진다 - 좌표축에 대략 10개 안팎이 되는 '보기 좋은' 간격
     (0.5/1/2/5/10/20/50/100 중 하나)을 고르는지 확인."""
     calib = _make_calibration((500.0, 500.0), px_per_moa=6.0)
     view = LiveFeedView(default_view_range_moa=45.0)
     view.set_calibration(calib)
 
-    # 기본(45MOA 범위)에서는 1MOA 간격이면 90줄이나 되므로 더 큰 간격을 골라야 함
-    assert view._current_grid_step_moa() > 1.0
+    # 기본(45MOA 범위)에서는 1MOA 간격이면 눈금이 90개나 되므로 더 큰 간격을 골라야 함
+    assert view._current_axis_tick_step_moa() > 1.0
 
     # 확대해서 범위가 좁아지면 더 촘촘한 간격도 허용
     view._on_zoom_changed(5)  # view_range = 9
-    assert view._current_grid_step_moa() <= 5.0
+    assert view._current_axis_tick_step_moa() <= 5.0
 
 
 def test_offset_text_uses_ascii_labels_not_korean():

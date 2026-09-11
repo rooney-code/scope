@@ -1,4 +1,4 @@
-"""카메라 프리뷰 + 오버레이(원점, 레드닷 중심, 선택적 격자) 위젯.
+"""카메라 프리뷰 + 오버레이(원점, 레드닷 중심, 선택적 좌표축/안내선) 위젯.
 
 카메라 해상도는 4K 이상이지만 화면(FHD)에 그대로 축소해서 보여주면 레드닷/눈금 같은 작은
 디테일이 뭉개진다. 또한 원점(크로스헤어 교차점)은 카메라 설치 상태에 따라 이미지 중앙이
@@ -9,9 +9,15 @@
     좁히는 배율로 동작한다.
   - 자른 영역은 **자기 자신의 가로세로 비율을 유지**한 채로만 리사이즈한다(원본 프레임의
     가로세로 비율로 강제로 맞추면 좌우가 늘어나 보이는 왜곡이 생김 - 실측으로 확인된 버그).
-  - 원점/레드닷 마커, 격자 오버레이는 모두 **자르고 리사이즈까지 끝난 최종 화면 좌표계**에서
-    그린다. 원본 해상도에서 그린 뒤 리사이즈하면 1px 두께 선이 보간 과정에서 위치에 따라
-    보였다 안 보였다 하는 문제가 있었음(실측으로 확인된 버그).
+  - 원점/레드닷 마커, 좌표축/안내선 오버레이는 모두 **자르고 리사이즈까지 끝난 최종 화면
+    좌표계**에서 그린다. 원본 해상도에서 그린 뒤 리사이즈하면 1px 두께 선이 보간 과정에서
+    위치에 따라 보였다 안 보였다 하는 문제가 있었음(실측으로 확인된 버그).
+  - 최종 QLabel 표시 시 `Qt.SmoothTransformation`을 사용한다 - 기본(FastTransformation,
+    최근접이웃)은 축소 비율에 따라 얇은 선을 통째로 건너뛰어 사라지게 하는 경우가 있었음
+    (실측으로 확인된 버그, 선 두께도 여유있게 2px로 상향).
+  - 격자형(체크무늬) 오버레이 대신, 원점을 지나는 **좌표축 2개(MOA 눈금 포함)** + 레드닷
+    위치를 지나는 **안내선 2개**만 그린다 - 안내선이 좌표축과 만나는 지점을 보면 레드닷의
+    좌표를 바로 읽을 수 있다(사용자 피드백으로 촘촘한 격자에서 변경).
 캘리브레이션이 아직 없으면(원점을 모르는 상태) 원본 프레임을 그대로 보여준다.
 """
 from __future__ import annotations
@@ -22,7 +28,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import QCheckBox, QHBoxLayout, QLabel, QSlider, QVBoxLayout, QWidget
 
-from core.calibration.grid_overlay import draw_moa_grid_overlay
+from core.calibration.grid_overlay import draw_coordinate_axes, draw_dot_guide_lines
 from core.calibration.pixel_angle_calibration import CalibrationProfile, PixelAngleCalibration
 from core.vision.red_dot_detector import DetectionResult
 
@@ -47,7 +53,7 @@ class LiveFeedView(QWidget):
         self._zoom_slider.valueChanged.connect(self._on_zoom_changed)
         self._zoom_label = QLabel(f"확대: 1단계 (원점 기준 ±{default_view_range_moa:.0f}MOA)")
 
-        self._grid_checkbox = QCheckBox("격자형 그리드 표시")
+        self._grid_checkbox = QCheckBox("좌표축/안내선 표시")
         self._grid_checkbox.stateChanged.connect(self._on_grid_toggle)
         self._grid_overlay_enabled = False
 
@@ -86,15 +92,14 @@ class LiveFeedView(QWidget):
     def _current_view_range_moa(self) -> float:
         return self._default_view_range_moa / self._zoom_level
 
-    def _current_grid_step_moa(self) -> float:
-        """확대 단계와 무관하게 화면에 대략 8~12개 정도의 격자선만 보이도록 간격을 정한다.
+    def _current_axis_tick_step_moa(self) -> float:
+        """확대 단계와 무관하게 좌표축에 대략 8~12개 정도의 눈금만 보이도록 간격을 정한다.
 
-        스케일(px/MOA)이 카메라마다 다르므로 1MOA 고정 간격은 배율에 따라 지나치게
-        촘촘해 보일 수 있다(체크무늬처럼 됨) - 그래서 view_range_moa에 맞춰 1/2/5/10/20/50 중
-        가장 적절한 "보기 좋은" 간격을 고른다.
+        스케일(px/MOA)이 카메라마다 다르므로 1MOA 고정 간격은 배율에 따라 눈금이 너무
+        빽빽해질 수 있다 - view_range_moa에 맞춰 1/2/5/10/20/50 중 가장 적절한 간격을 고른다.
         """
-        target_lines = 10
-        raw_step = (self._current_view_range_moa() * 2) / target_lines
+        target_ticks = 10
+        raw_step = (self._current_view_range_moa() * 2) / target_ticks
         nice_steps = [0.5, 1, 2, 5, 10, 20, 50, 100]
         return min(nice_steps, key=lambda s: abs(s - raw_step))
 
@@ -113,24 +118,28 @@ class LiveFeedView(QWidget):
         display, transform = self._crop_and_resize_around_origin(frame_bgr, profile)
         display_profile = self._transform_profile(profile, transform)
 
+        dot_px_display: tuple[float, float] | None = None
+        if detection is not None and detection.found:
+            dot_px_display = self._transform_point(detection.center_px, transform)
+
         if self._grid_overlay_enabled and display_profile is not None:
-            display = draw_moa_grid_overlay(
+            display = draw_coordinate_axes(
                 display,
                 display_profile,
-                moa_step=self._current_grid_step_moa(),
-                thickness=1,
+                moa_step=self._current_axis_tick_step_moa(),
                 max_moa_range=self._current_view_range_moa(),
             )
+            if dot_px_display is not None:
+                display = draw_dot_guide_lines(display, dot_px_display)
 
-        # 원점: 작은 마커만 표시 (긴 십자선은 그리지 않음, 레드닷과 다른 색으로 구분)
+        # 원점: 작은 마커만 표시 (좌표축이 꺼져 있어도 항상 보이게, 레드닷과 다른 색으로 구분)
         if display_profile is not None:
             ox, oy = int(round(display_profile.origin_px_x)), int(round(display_profile.origin_px_y))
             cv2.drawMarker(display, (ox, oy), _ORIGIN_MARKER_COLOR_BGR, cv2.MARKER_CROSS, 14, 2)
 
         # 레드닷: 검출된 중심점을 빨간 점 하나로만 표시
-        if detection is not None and detection.found:
-            dx, dy = self._transform_point(detection.center_px, transform)
-            cv2.circle(display, (int(round(dx)), int(round(dy))), 4, _RED_DOT_MARKER_COLOR_BGR, -1)
+        if dot_px_display is not None:
+            cv2.circle(display, (int(round(dot_px_display[0])), int(round(dot_px_display[1]))), 4, _RED_DOT_MARKER_COLOR_BGR, -1)
 
         self._draw_offset_text(display, detection, profile)
 
@@ -139,7 +148,11 @@ class LiveFeedView(QWidget):
         qimg = QImage(rgb.data, w, h, ch * w, QImage.Format_RGB888)
         self._image_label.setPixmap(
             QPixmap.fromImage(qimg).scaled(
-                self._image_label.width(), self._image_label.height(), Qt.KeepAspectRatio
+                self._image_label.width(),
+                self._image_label.height(),
+                Qt.KeepAspectRatio,
+                Qt.SmoothTransformation,  # 기본(FastTransformation, 최근접이웃)은 1px 안내선을
+                # 축소 과정에서 통째로 건너뛰어 사라지게 하는 경우가 있어 스무스 스케일링 사용
             )
         )
 

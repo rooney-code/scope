@@ -1,8 +1,8 @@
 """실제 프로그램의 LiveFeedView가 그대로 그리는 화면을 캡처해서 이미지로 저장.
 
 임의의 별도 시각화 코드가 아니라 app/views/live_feed_view.py의 실제 렌더링 로직
-(_render, _crop_around_origin, _draw_offset_text, draw_moa_grid_overlay)을 그대로 통과시켜
-만든 결과이므로, 실제 프로그램 화면과 100% 동일하다.
+(_render, _crop_and_resize_around_origin, _draw_offset_text, draw_coordinate_axes,
+draw_dot_guide_lines)을 그대로 통과시켜 만든 결과이므로, 실제 프로그램 화면과 100% 동일하다.
 
 px_per_moa는 이 저장소의 예시 사진 한 장을 기준으로 한 임시 측정값이며, 실제 프로그램에서는
 카메라별로 캘리브레이션 화면(자동검출 + 클릭스냅/화살표 미세조정)에서 사용자가 직접 확정/
@@ -68,6 +68,10 @@ def main() -> None:
             view = LiveFeedView()
             view.set_calibration(calibration)
             view.resize(1920, 1080)  # 실제 프로그램의 FHD 화면 크기
+            # widget을 show()하지 않으면 레이아웃이 계산되지 않아 내부 QLabel이 작은
+            # 기본 크기(setMinimumSize)에 머물러, 최종 스케일 축소가 지나치게 커져 얇은
+            # 선이 사라지는 문제가 있었음 - 라벨 크기를 직접 지정해 방지.
+            view._image_label.resize(1600, 1600)
             view._grid_checkbox.setChecked(grid_on)
 
             view.on_frame(img)

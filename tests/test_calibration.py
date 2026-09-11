@@ -35,6 +35,35 @@ def test_grid_auto_detector_finds_origin():
     assert abs(oy - 300) < 5
 
 
+def _add_vignette(frame: np.ndarray, strength: float = 60.0) -> np.ndarray:
+    """가장자리로 갈수록 어두워지는 비네팅을 합성 - 실제 카메라 사진에서 무게중심 기반
+    원점 추정이 배경 기울기에 편향되는 문제를 재현하기 위함."""
+    h, w = frame.shape[:2]
+    yy, xx = np.mgrid[0:h, 0:w]
+    cy, cx = h / 2, w / 2
+    dist = np.sqrt((xx - cx) ** 2 + (yy - cy) ** 2)
+    dist = dist / dist.max()
+    darken = (dist * strength).astype(np.int16)
+    out = frame.astype(np.int16)
+    out -= darken[..., None]
+    return np.clip(out, 0, 255).astype(np.uint8)
+
+
+def test_grid_auto_detector_subpixel_refinement_survives_vignette():
+    """비네팅(가장자리 어두움)이 있어도 서브픽셀 정밀 원점 추정이 크게 흔들리지 않아야 한다 -
+    실측 결과 배경 기울기 제거(detrend) 없이는 여기서 1px 이상 편향이 발생했었음."""
+    frame = _make_grid_frame(width=1600, height=1200, origin=(823, 611), px_per_unit=6.0)
+    frame = _add_vignette(frame, strength=50.0)
+
+    detector = GridAutoDetector(min_line_length_ratio=0.2)
+    result = detector.detect(frame)
+
+    assert result.found
+    ox, oy = result.origin_px
+    assert abs(ox - 823.0) < 2.0
+    assert abs(oy - 611.0) < 2.0
+
+
 def test_pixel_angle_calibration_snap_and_convert():
     calib = PixelAngleCalibration(mrad_to_moa_ratio=3.438)
 
