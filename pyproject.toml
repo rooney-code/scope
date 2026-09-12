@@ -20,6 +20,12 @@ camera = [
 dev = [
     "pytest>=8.0",
 ]
+drive = [
+    # scripts/upload_to_drive.py 전용 - 앱 실행에는 필요 없음(샘플 이미지 업로드 유틸리티)
+    "google-auth-oauthlib>=1.2",
+    "google-api-python-client>=2.100",
+    "google-auth-httplib2>=0.2",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

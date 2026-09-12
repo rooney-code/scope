@@ -6,6 +6,10 @@ __pycache__/
 venv/
 calibration_profiles/
 settings.local.json
+
+# scripts/upload_to_drive.py 전용 - 개인 구글 계정 인증정보(절대 커밋 금지)
+scripts/credentials.json
+scripts/token.json
 build/
 dist/
 *.spec.bak
