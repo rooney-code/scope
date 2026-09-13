@@ -82,7 +82,8 @@ def main() -> None:
             # 기본 크기(setMinimumSize)에 머물러, 최종 스케일 축소가 지나치게 커져 얇은
             # 선이 사라지는 문제가 있었음 - 라벨 크기를 직접 지정해 방지.
             view._image_label.resize(1600, 1600)
-            view._grid_checkbox.setChecked(grid_on)
+            view._origin_axes_checkbox.setChecked(grid_on)
+            view._guide_line_checkbox.setChecked(grid_on)
 
             view.on_frame(img)
             view.on_detection(detection)

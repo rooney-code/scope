@@ -26,7 +26,16 @@ import cv2
 import numpy as np
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QImage, QMouseEvent, QPixmap
-from PySide6.QtWidgets import QCheckBox, QHBoxLayout, QLabel, QSizePolicy, QSlider, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QCheckBox,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QSizePolicy,
+    QSlider,
+    QVBoxLayout,
+    QWidget,
+)
 
 from core.calibration.grid_overlay import draw_coordinate_axes, draw_dot_guide_lines
 from core.calibration.pixel_angle_calibration import CalibrationProfile, PixelAngleCalibration
@@ -84,9 +93,35 @@ class LiveFeedView(QWidget):
         self._zoom_slider.valueChanged.connect(self._on_zoom_changed)
         self._zoom_label = QLabel(f"확대: 1단계 (원점 기준 ±{default_view_range_moa:.0f}MOA)")
 
-        self._grid_checkbox = QCheckBox("좌표축/안내선 표시")
-        self._grid_checkbox.stateChanged.connect(self._on_grid_toggle)
-        self._grid_overlay_enabled = False
+        # 오버레이 요소별 개별 표시/숨기기 - 작업자마다 화면에 정보가 너무 많다고 느낄 수
+        # 있어(사용자 피드백, 2026-09-13) 항목별로 끄고 켤 수 있게 한다. 전부 기본값은 표시.
+        self._origin_axes_checkbox = QCheckBox("원점/기준선")
+        self._origin_axes_checkbox.setChecked(True)
+        self._origin_axes_checkbox.stateChanged.connect(self._on_overlay_toggle)
+
+        self._red_dot_checkbox = QCheckBox("레드닷")
+        self._red_dot_checkbox.setChecked(True)
+        self._red_dot_checkbox.stateChanged.connect(self._on_overlay_toggle)
+
+        self._guide_line_checkbox = QCheckBox("안내선(노란선)")
+        self._guide_line_checkbox.setChecked(True)
+        self._guide_line_checkbox.stateChanged.connect(self._on_overlay_toggle)
+
+        self._info_text_checkbox = QCheckBox("오차 정보(R/U)")
+        self._info_text_checkbox.setChecked(True)
+        self._info_text_checkbox.stateChanged.connect(self._on_overlay_toggle)
+
+        self._overlay_checkboxes = [
+            self._origin_axes_checkbox,
+            self._red_dot_checkbox,
+            self._guide_line_checkbox,
+            self._info_text_checkbox,
+        ]
+
+        show_all_btn = QPushButton("전체 보이기")
+        show_all_btn.clicked.connect(lambda: self._set_all_overlay_checkboxes(True))
+        hide_all_btn = QPushButton("전체 숨기기")
+        hide_all_btn.clicked.connect(lambda: self._set_all_overlay_checkboxes(False))
 
         self._offset_label = QLabel("레드닷 오차: -")
 
@@ -94,11 +129,18 @@ class LiveFeedView(QWidget):
         zoom_row.addWidget(QLabel("확대 단계 (1~5, 원점 기준):"))
         zoom_row.addWidget(self._zoom_slider)
         zoom_row.addWidget(self._zoom_label)
-        zoom_row.addWidget(self._grid_checkbox)
+
+        overlay_row = QHBoxLayout()
+        overlay_row.addWidget(QLabel("오버레이 표시:"))
+        for checkbox in self._overlay_checkboxes:
+            overlay_row.addWidget(checkbox)
+        overlay_row.addWidget(show_all_btn)
+        overlay_row.addWidget(hide_all_btn)
 
         layout = QVBoxLayout(self)
         layout.addWidget(self._image_container, stretch=1)
         layout.addLayout(zoom_row)
+        layout.addLayout(overlay_row)
         layout.addWidget(self._offset_label)
 
         self._last_frame: np.ndarray | None = None
@@ -150,10 +192,13 @@ class LiveFeedView(QWidget):
             orig_x, orig_y = disp_x / scale + x0, disp_y / scale + y0
         self.frame_clicked_px.emit(orig_x, orig_y)
 
-    def _on_grid_toggle(self, state: int) -> None:
-        self._grid_overlay_enabled = bool(state)
+    def _on_overlay_toggle(self, _state: int) -> None:
         if self._last_frame is not None:
             self._render(self._last_frame, self._last_detection)
+
+    def _set_all_overlay_checkboxes(self, checked: bool) -> None:
+        for checkbox in self._overlay_checkboxes:
+            checkbox.setChecked(checked)  # 각 setChecked가 _on_overlay_toggle을 호출해 다시 그림
 
     def _on_zoom_changed(self, level: int) -> None:
         self._zoom_level = level
@@ -216,7 +261,12 @@ class LiveFeedView(QWidget):
         if detection is not None and detection.found:
             dot_px_display = self._transform_point(detection.center_px, transform)
 
-        if self._grid_overlay_enabled and display_profile is not None:
+        show_origin_axes = self._origin_axes_checkbox.isChecked()
+        show_red_dot = self._red_dot_checkbox.isChecked()
+        show_guide_lines = self._guide_line_checkbox.isChecked()
+        show_info_text = self._info_text_checkbox.isChecked()
+
+        if show_origin_axes and display_profile is not None:
             display = draw_coordinate_axes(
                 display,
                 display_profile,
@@ -224,19 +274,19 @@ class LiveFeedView(QWidget):
                 label_step_moa=self._current_axis_label_step_moa(),
                 max_moa_range=self._current_view_range_moa(),
             )
-            if dot_px_display is not None:
-                display = draw_dot_guide_lines(display, dot_px_display)
-
-        # 원점: 작은 마커만 표시 (좌표축이 꺼져 있어도 항상 보이게, 레드닷과 다른 색으로 구분)
-        if display_profile is not None:
+            # 원점 마커도 "원점/기준선" 항목에 포함 - 좌표축과 같은 그룹으로 취급한다
+            # (사용자 요청: 원점 및 기준선을 한 항목으로 켜고 끔).
             ox, oy = int(round(display_profile.origin_px_x)), int(round(display_profile.origin_px_y))
             cv2.drawMarker(display, (ox, oy), _ORIGIN_MARKER_COLOR_BGR, cv2.MARKER_CROSS, 14, 2)
 
+        if show_guide_lines and dot_px_display is not None:
+            display = draw_dot_guide_lines(display, dot_px_display)
+
         # 레드닷: 검출된 중심점을 빨간 점 하나로만 표시
-        if dot_px_display is not None:
+        if show_red_dot and dot_px_display is not None:
             cv2.circle(display, (int(round(dot_px_display[0])), int(round(dot_px_display[1]))), 4, _RED_DOT_MARKER_COLOR_BGR, -1)
 
-        self._draw_offset_text(display, detection, profile)
+        self._draw_offset_text(display, detection, profile, show_info_text)
 
         rgb = cv2.cvtColor(display, cv2.COLOR_BGR2RGB)
         h, w, ch = rgb.shape
@@ -252,11 +302,14 @@ class LiveFeedView(QWidget):
         )
 
     def _draw_offset_text(
-        self, display: np.ndarray, detection: DetectionResult | None, profile
+        self, display: np.ndarray, detection: DetectionResult | None, profile, show_on_image: bool
     ) -> None:
         """레드닷이 원점 기준 좌우/상하로 몇 MOA 벗어나 있는지 화면 좌하단에 표시.
 
         cv2.putText는 한글 글리프가 없어 깨지므로 영문 라벨(R/L/U/D)만 사용한다.
+        영상 하단의 별도 Qt 라벨(self._offset_label)은 화면 자체를 가리지 않으므로 이
+        오버레이 텍스트 체크박스와 무관하게 항상 갱신한다 - show_on_image는 영상 위에
+        그려 넣는 텍스트(cv2.putText)만 켜고 끈다.
         """
         if detection is None or not detection.found or profile is None or self._calibration is None:
             self._offset_label.setText("레드닷 오차: -")
@@ -266,6 +319,10 @@ class LiveFeedView(QWidget):
         lr = "R" if x_moa >= 0 else "L"
         ud = "U" if y_moa >= 0 else "D"
         text = f"{lr} {abs(x_moa):.2f} MOA  /  {ud} {abs(y_moa):.2f} MOA"
+        self._offset_label.setText(f"레드닷 오차: {text}")
+
+        if not show_on_image:
+            return
 
         h, w = display.shape[:2]
         font_scale = max(1.0, w / 1400)  # 해상도에 비례해 글자 크기 자동 조절 (가독성 확보)
@@ -282,7 +339,6 @@ class LiveFeedView(QWidget):
         cv2.putText(
             display, text, (pad, h - pad), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (0, 255, 255), thickness
         )
-        self._offset_label.setText(f"레드닷 오차: {text}")
 
     def _scale_to_display_size(self, frame: np.ndarray) -> tuple[np.ndarray, tuple[float, float, float]]:
         """캘리브레이션 모드용: 크롭 없이 원본 전체를 display_target_size에 맞게 비율 유지

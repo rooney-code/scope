@@ -169,7 +169,66 @@ def test_offset_text_uses_ascii_labels_not_korean():
     frame = np.zeros((200, 200, 3), dtype=np.uint8)
     detection = DetectionResult(found=True, center_px=(30.0, 170.0))  # 원점 기준 좌하단
 
-    view._draw_offset_text(frame, detection, calib.profile)
+    view._draw_offset_text(frame, detection, calib.profile, True)
 
     assert "R" in view._offset_label.text() or "L" in view._offset_label.text()
     assert all(ord(c) < 128 for c in ["R", "L", "U", "D"])  # ASCII 라벨만 사용함을 명시
+
+
+def test_offset_text_checkbox_off_updates_label_but_not_image():
+    """show_on_image=False(체크박스 꺼짐)이면 영상 위 텍스트는 그리지 않되, 하단 별도
+    라벨(self._offset_label)은 그대로 갱신되어야 한다 - 사용자 요청(2026-09-13): 오버레이
+    항목별 개별 표시/숨기기."""
+    from core.vision.red_dot_detector import DetectionResult
+
+    calib = _make_calibration((0.0, 0.0), px_per_moa=6.0)
+    view = LiveFeedView()
+    view.set_calibration(calib)
+
+    frame = np.zeros((200, 200, 3), dtype=np.uint8)
+    detection = DetectionResult(found=True, center_px=(30.0, 170.0))
+
+    view._draw_offset_text(frame, detection, calib.profile, False)
+
+    assert np.array_equal(frame, np.zeros((200, 200, 3), dtype=np.uint8))  # 영상에는 아무것도 안 그려짐
+    assert "MOA" in view._offset_label.text()  # 하단 라벨은 그대로 갱신됨
+
+
+def test_overlay_checkboxes_independently_control_rendered_elements():
+    """원점/기준선, 레드닷, 안내선, 오차 정보를 각각 껐을 때 그 요소만 화면에서 사라지고
+    나머지는 남아있어야 한다(사용자 요청: 오버레이 항목별 개별 표시/숨기기 + 전체 보이기/
+    숨기기)."""
+    from core.vision.red_dot_detector import DetectionResult
+
+    calib = _make_calibration((100.0, 100.0), px_per_moa=6.0)
+    view = LiveFeedView()
+    view.set_calibration(calib)
+    view._image_label.setFixedSize(400, 400)
+
+    frame = np.zeros((200, 200, 3), dtype=np.uint8)
+    frame[..., 1] = 60
+    detection = DetectionResult(found=True, center_px=(150.0, 100.0))  # 원점에서 오른쪽으로 이동
+
+    def render_and_get_pixmap_image():
+        from PySide6.QtGui import QImage
+
+        view.on_frame(frame)
+        view.on_detection(detection)
+        pixmap = view._image_label.pixmap()
+        qimg = pixmap.toImage().convertToFormat(QImage.Format_RGB32)
+        w, h = qimg.width(), qimg.height()
+        buf = qimg.constBits()
+        arr = np.frombuffer(buf, dtype=np.uint8).reshape((h, qimg.bytesPerLine() // 4, 4))[:, :w, :3]
+        return arr.copy()
+
+    view._set_all_overlay_checkboxes(True)
+    all_on = render_and_get_pixmap_image()
+
+    view._red_dot_checkbox.setChecked(False)
+    red_dot_off = render_and_get_pixmap_image()
+    assert not np.array_equal(all_on, red_dot_off)  # 레드닷을 끄면 화면이 달라져야 함
+
+    view._set_all_overlay_checkboxes(False)
+    all_off = render_and_get_pixmap_image()
+    assert not np.array_equal(all_on, all_off)
+    assert not np.array_equal(red_dot_off, all_off)  # 안내선/기준선까지 꺼져 추가로 달라짐
