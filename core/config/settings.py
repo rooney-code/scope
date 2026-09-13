@@ -79,6 +79,24 @@ class DetectionSettings:
     # 그대로 가중, 커질수록 밝은 부분에 더 집중). 0으로 두면 기존 방식(이진 마스크 무게중심)과
     # 동일해짐.
     centroid_intensity_power: float = 2.0
+    # "코멧테일" 꼬리는 어두운 산란광일 뿐 실제 레드닷(LED 광원) 자체는 항상 원형이다(고객
+    # 확인 사항, docs/detection_notes.md 10차 참고). fitEllipse는 꼬리까지 포함한 윤곽선
+    # 전체로 형상을 구해 늘어진 타원으로 보이므로, 밝기 상위 영역("코어")만 최소외접원으로
+    # 감싸 원형 형상을 별도로 구한다(core_circle). 임계값은 블롭 내부의 (최소~최대) 밝기
+    # 범위에서의 상대 위치로 정한다(threshold = min + ratio*(max-min)) - 블롭 전체의 절대
+    # 밝기 대비 비율(예: 최대값의 60%)로 정하면 이 데이터셋처럼 블롭 내 밝기 대비가 원래
+    # 작을 때(min=118,max=197) 거의 모든 픽셀이 임계값을 넘어버려 core가 꼬리 끝까지 그대로
+    # 포함되는 문제가 있었음(실측으로 확인). 0.4 값은 실측 검증 결과 중심 부근(원형,
+    # 반지름 약 13.0px)과 35MOA 부근 코멧테일 프레임(반지름 약 13.1~13.2px)에서 거의
+    # 동일한 반지름을 내어, 실제 LED 코어 크기가 위치와 무관하게 일정하다는 물리적 사실과
+    # 부합함이 확인된 값이다.
+    core_brightness_ratio: float = 0.4
+    # BlobTracker의 심한 왜곡 구간 보정(추적) 설정 - 사용자 확인 사항(2026-09-13): 정상적인
+    # 원형 구간(대부분의 프레임)은 프레임별 측정치를 그대로 신뢰하고, elongation(늘어짐
+    # 비율)이 임계값을 넘는 심한 코멧테일 구간에서만 이전 프레임들로 추정한 속도 기반
+    # 예측 위치와 현재 측정치를 blend해 흔들림을 줄인다. docs/detection_notes.md 10차 참고.
+    elongation_correction_threshold: float = 1.5
+    elongation_correction_blend: float = 0.5
 
 
 @dataclass

@@ -258,3 +258,51 @@ X -1.4~35.4, Y -36.2~35.4). 가장 심하게 늘어진 프레임(frame_000022, e
 확인. 대표 프레임(시작/끝/elongation 상위 3장) 오버레이 이미지와 전체 100프레임 좌표/elongation
 기록을 `tests/test_images/video_image_results/`에 저장.
 재현 방법: `PYTHONPATH=. python3 scripts/detect_on_video_image.py`
+
+## 11차 수정 (2026-09-13, 원형 코어 검출 + 심한 왜곡 구간 추적 보정)
+
+10차 검증 결과물을 사용자가 검토하며 두 가지 문제를 지적:
+
+1. **검증용 오버레이에 좌표축/눈금이 없었음** - `scripts/detect_on_video_image.py`가 실제
+   `LiveFeedView`가 아니라 별도의 간단한 `cv2.ellipse` 오버레이를 그렸기 때문(실제 프로그램
+   화면과 다름). `render_live_view_demo.py`처럼 실제 `LiveFeedView`(좌표축+눈금+안내선+
+   MOA 오차 텍스트)를 그대로 렌더링하도록 스크립트를 다시 작성.
+2. **더 근본적인 문제**: "레드닷은 원형이 되어야 하는데 검출 결과가 타원형으로 보인다."
+   기존 `RedDotDetector.detect()`가 반환하는 `ellipse`(`cv2.fitEllipse`)는 코멧테일 꼬리까지
+   포함한 윤곽선 전체로 형상을 구하므로, 실측 영상(frame_000022, elongation 2.18배)에서
+   실제로 늘어진 타원처럼 보임 - 실제 화면(LiveFeedView)은 중심점만 표시해 사용자에게
+   직접 보이는 문제는 아니었지만, 검출 알고리즘 자체가 "레드닷=타원"으로 형상을 잘못
+   표현하고 있는 것은 사실이었음. 고객이 이미 확인해준 대로 실제 LED 광원 자체는 항상
+   원형이고 꼬리는 광학적 산란일 뿐이므로, 형상 표현도 이 사실과 일치해야 한다는 지적.
+
+**해결 1 - `core_circle` 추가**: 블롭 내부의 (최소~최대) 밝기 범위에서 상대적으로 밝은
+상위 구간("코어")만 `cv2.minEnclosingCircle`로 감싸 원형 형상을 별도로 구함
+(`RedDotDetector._fit_core_circle`, 임계값은 절대 밝기가 아니라 블롭 내 상대 범위로 계산 -
+`core_brightness_ratio=0.4`). 실측 검증 결과, 원점 부근(원형, 반지름 약 13.0px)과 35MOA
+부근 코멧테일 프레임(반지름 약 13.1~13.2px)에서 core_circle 반지름이 거의 동일하게
+나와("코어 자체는 위치와 무관하게 일정한 크기"), 실제 LED 코어 크기가 일정하다는 물리적
+사실과 부합함을 확인. (참고: 블롭 최대 밝기 대비 절대 비율로 임계값을 잡으면 이 데이터셋처럼
+블롭 내 밝기 대비가 원래 작을 때(min=118,max=197) 거의 모든 픽셀이 코어로 잡혀 꼬리 끝까지
+포함되는 문제가 있었음 - 상대 범위 기준으로 바꿔 해결.)
+
+**추가 확인 사항(사용자, 2026-09-13)**: 이 왜곡은 주로 **상방향(위쪽 조절) 이동에서 발생**하며,
+늘어진 형상의 **윗부분(중심에서 먼 쪽)이 실제 레드닷**이고 아래쪽(중심 방향)이 꼬리다 - 즉
+꼬리는 항상 원점 쪽으로, 머리(실제 위치)는 항상 이동 방향(원점에서 먼 쪽)으로 향한다는
+것. `_intensity_weighted_centroid()`/`_fit_core_circle()`는 방향을 하드코딩하지 않고 순수
+밝기 기준으로 "더 밝은 쪽"을 찾으므로, 상/하/좌/우 어느 방향으로 이동하든 동일한 원리로
+올바른 머리 쪽에 수렴함(실측 결과로도 frame_000022 기준 core_circle 중심이 윤곽선 bbox의
+아래쪽이 아니라 위쪽에 위치함을 확인).
+
+**해결 2 - `BlobTracker` 심한 왜곡 구간 추적 보정**: 사용자가 "이전 프레임과의 연관성을
+고려해 레드닷을 추적해야 한다"고 추가 요청. 다만 대부분의 정상적인 원형 구간까지 예측치와
+섞으면 불필요한 지연(lag)과 회귀 위험이 생기므로, **elongation이 임계값
+(`elongation_correction_threshold=1.5`)을 넘는 심한 코멧테일 구간에서만** 이전 2프레임으로
+추정한 등속 예측 위치와 현재 측정치를 blend(`elongation_correction_blend=0.5`)하도록
+`BlobTracker.select()`에 추가(정상 원형 구간은 기존과 동일하게 프레임별 측정치를 그대로
+신뢰 - 사용자가 직접 선택한 범위, 다른 옵션(전체 프레임 스무딩/정식 칼만 필터/플래그만 추가)
+대비 회귀 위험이 가장 낮음). `InspectionViewModel`에서 `DetectionSettings`의 두 값을
+`BlobTracker` 생성자로 그대로 전달하도록 연결.
+
+재현: `PYTHONPATH=. python3 scripts/detect_on_video_image.py` (결과의
+`{name}_shape_compare.jpg`가 ellipse 대 core_circle 비교, `{label}_{name}_liveview.png`가
+실제 화면 그대로의 렌더링).

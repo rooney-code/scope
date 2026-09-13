@@ -1,7 +1,7 @@
 import numpy as np
 import cv2
 
-from core.vision.red_dot_detector import RedDotDetector
+from core.vision.red_dot_detector import RedDotDetector, DetectionResult
 from core.vision.blob_tracker import BlobTracker
 from core.config.settings import DetectionSettings
 
@@ -78,6 +78,31 @@ def test_comet_tail_shape_center_is_pulled_toward_bright_head_not_binary_centroi
     assert weighted_bias < naive_bias * 0.7  # 가중치 적용으로 쏠림이 뚜렷이 줄어듦
 
 
+def test_core_circle_is_round_even_when_ellipse_is_stretched_by_comet_tail():
+    """core_circle은 꼬리를 뺀 밝은 "머리"만의 형상이므로, 꼬리가 길어질수록 늘어나는
+    ellipse와 달리 꼬리 길이와 거의 무관하게 일정한 반지름을 유지해야 한다(실제 LED 광원
+    자체는 항상 원형이라는 물리적 사실과 일치 - docs/detection_notes.md 10차 참고)."""
+    detector = RedDotDetector(DetectionSettings())
+
+    short_tail = _make_comet_tail_frame(head_center=(200, 150), tail_len=5)
+    long_tail = _make_comet_tail_frame(head_center=(200, 150), tail_len=20)
+
+    short_result = detector.detect_best(short_tail)
+    long_result = detector.detect_best(long_tail)
+    assert short_result.found and long_result.found
+    assert short_result.core_circle is not None and long_result.core_circle is not None
+
+    # ellipse(꼬리 포함)는 꼬리가 길어지면 뚜렷이 늘어난다(회귀 확인용).
+    short_major = max(short_result.ellipse[1])
+    long_major = max(long_result.ellipse[1])
+    assert long_major > short_major * 1.3
+
+    # core_circle 반지름은 꼬리 길이와 거의 무관하게 유지되어야 한다.
+    short_radius = short_result.core_circle[1]
+    long_radius = long_result.core_circle[1]
+    assert abs(long_radius - short_radius) < short_radius * 0.3
+
+
 def test_no_dot_returns_not_found():
     frame = np.zeros((300, 400, 3), dtype=np.uint8)
     frame[..., 1] = 60
@@ -103,6 +128,42 @@ def test_blob_tracker_picks_nearest_to_previous():
     assert r2.found
     assert abs(r2.center_px[0] - 110) < 4
     assert abs(r2.center_px[1] - 105) < 4
+
+
+def _detection(cx: float, cy: float, major: float, minor: float):
+    return DetectionResult(
+        found=True,
+        center_px=(cx, cy),
+        ellipse=((cx, cy), (minor, major), 0.0),
+        area_px2=major * minor,
+    )
+
+
+def test_blob_tracker_blends_toward_prediction_only_when_elongated():
+    """정상적인 원형 구간(elongation < threshold)의 측정치는 그대로 신뢰하고, 심한
+    코멧테일 왜곡 구간(elongation >= threshold)에서만 이전 속도 기반 예측치와 blend해
+    단일 프레임 흔들림을 억제해야 한다(사용자 확인 사항, 2026-09-13)."""
+    tracker = BlobTracker(max_jump_px=60, elongation_correction_threshold=1.5, elongation_correction_blend=0.5)
+
+    tracker.select([_detection(100, 100, 8, 8)])  # 1프레임: 시드
+    tracker.select([_detection(110, 100, 8, 8)])  # 2프레임: 속도(+10, 0) 확립
+
+    # 3프레임: 측정치가 25px 튀었지만(노이즈) 심하게 늘어진 형상(elongation=3.75)
+    r3 = tracker.select([_detection(135, 100, 30, 8)])
+    predicted_x = 120.0  # 110 + (110-100)
+    assert abs(r3.center_px[0] - 127.5) < 0.5  # 측정치(135)와 예측치(120)의 중간으로 보정됨
+    assert r3.center_px[0] != 135.0
+
+
+def test_blob_tracker_does_not_blend_circular_dot():
+    """elongation이 임계값 미만(정상 원형)이면 측정치를 그대로 반환해야 한다."""
+    tracker = BlobTracker(max_jump_px=60, elongation_correction_threshold=1.5, elongation_correction_blend=0.5)
+
+    tracker.select([_detection(100, 100, 8, 8)])
+    tracker.select([_detection(110, 100, 8, 8)])
+
+    r3 = tracker.select([_detection(135, 100, 8, 8)])  # 같은 튐이지만 원형
+    assert abs(r3.center_px[0] - 135.0) < 1e-9
 
 
 def test_blob_tracker_rejects_jump_beyond_max():

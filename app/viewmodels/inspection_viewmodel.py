@@ -37,7 +37,11 @@ class InspectionViewModel(QObject):
 
         self.frame_bus = FrameBus()
         self.detector = RedDotDetector(settings.detection)
-        self.tracker = BlobTracker(max_jump_px=settings.detection.max_blob_jump_px)
+        self.tracker = BlobTracker(
+            max_jump_px=settings.detection.max_blob_jump_px,
+            elongation_correction_threshold=settings.detection.elongation_correction_threshold,
+            elongation_correction_blend=settings.detection.elongation_correction_blend,
+        )
         self.calibration = PixelAngleCalibration(mrad_to_moa_ratio=settings.calibration.mrad_to_moa_ratio)
         self.state_machine = TravelTestStateMachine(settings.stage2)
 
