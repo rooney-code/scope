@@ -165,6 +165,39 @@ def test_backlash_exceeds_threshold_fails_automatically():
     assert result.check_results[-1].status == Verdict.FAIL
 
 
+def test_measurements_are_corrected_relative_to_actual_start_point_not_absolute_origin():
+    """시험 시작점이 그리드 절대 원점(0,0)과 정확히 일치할 가능성은 낮다(사용자 확인 사항,
+    2026-09-13) - 예: 실제로는 (0.1, 0.1)에서 시작. 이 경우 판정에 쓰이는 measured_value는
+    항상 시작점 기준 상대값이어야 하고(절대 원점 기준 raw_measured_value는 참고용으로 별도
+    보존), start_point_moa에 실제 시작 좌표가 기록되어야 한다."""
+    m = _make_machine()
+    m.configure([TravelDirection.UP])
+    m.start_next_direction()
+
+    # 시작점이 (0.1, 0.1) - 그리드 절대 원점이 아님
+    t = _feed_ramp(m, x_values=[0.1] * 4, y_values=[0.1, 10, 20, 30])
+    # 목표(35) 지점에서 cross(x)가 절대 원점 기준 2.4moa로 안정 - 시작점(0.1) 기준으로는 2.3moa
+    t = _feed_hold(m, x=2.4, y=35.1, n=6, t0=t)
+    assert m.phase == Phase.RETURN
+
+    # 복귀도 시작점(0.1, 0.1) 기준으로 완료
+    t = _feed_ramp(m, x_values=[0.1] * 4, y_values=[20, 10, 5, 0.1], t0=t)
+    _feed_hold(m, x=0.1, y=0.1, n=6, t0=t)
+
+    assert m.phase == Phase.INSPECTION_DONE
+    result = m.direction_results[-1]
+    assert result.start_point_moa == pytest.approx((0.1, 0.1))
+
+    shift = next(c for c in result.check_results if c.check_type == CheckType.SHIFT)
+    assert shift.measured_value == pytest.approx(2.3, abs=1e-9)  # 시작점 보정된 최종값(판정에 사용)
+    assert shift.raw_measured_value == pytest.approx(2.4, abs=1e-9)  # 절대 원점 기준 원시값(참고용)
+    assert shift.status == Verdict.PASS  # 2.3 <= 2.5 임계값
+
+    travel = next(c for c in result.check_results if c.check_type == CheckType.TRAVEL_AMOUNT)
+    assert travel.measured_value == pytest.approx(35.0, abs=1e-9)  # 35.1 - 0.1(시작점 보정)
+    assert travel.raw_measured_value == pytest.approx(35.1, abs=1e-9)
+
+
 def test_dead_click_manual_flag_fails_immediately():
     m = _make_machine()
     m.configure([TravelDirection.UP])

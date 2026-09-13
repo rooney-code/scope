@@ -67,6 +67,21 @@ class TravelTestStateMachine:
         self._max_abs_cross: float = 0.0
         self._last_primary: float = 0.0
         self._last_cross: float = 0.0
+        # 그리드 절대 원점 기준 원시값(raw_measured_value 기록용) - 아래 baseline 관련 필드와
+        # 함께 사용. 판정 자체는 항상 baseline으로 보정된 위 필드들을 사용한다.
+        self._max_primary_reached_raw: float = 0.0
+        self._max_abs_cross_raw: float = 0.0
+        self._last_primary_raw: float = 0.0
+        self._last_cross_raw: float = 0.0
+        # 이 방향 시험을 시작한 시점(첫 feed_position() 샘플)의 실측 좌표 - 시험 시작점이
+        # 그리드 절대 원점(0,0)과 정확히 일치할 가능성은 낮으므로(사용자 확인 사항,
+        # 2026-09-13), 이후 모든 primary/cross 값은 이 시작점을 기준(0,0)으로 재계산된
+        # 상대값을 사용한다. docs/detection_notes.md 12차 참고.
+        self._baseline_captured: bool = False
+        self._baseline_x_moa: float = 0.0
+        self._baseline_y_moa: float = 0.0
+        self._baseline_primary: float = 0.0
+        self._baseline_cross: float = 0.0
         self._pending_checks: list[CheckResult] = []
         self._dead_click_flagged: bool = False
 
@@ -193,13 +208,32 @@ class TravelTestStateMachine:
         if self.phase not in (Phase.OUTBOUND, Phase.RETURN) or self.current_direction is None:
             return
 
-        primary, cross = resolve_primary_and_cross(self.current_direction, sample.x_moa, sample.y_moa)
+        primary_raw, cross_raw = resolve_primary_and_cross(self.current_direction, sample.x_moa, sample.y_moa)
+
+        if not self._baseline_captured:
+            # 이 방향 시험의 실제 시작 지점을 baseline으로 확정 - 이후 모든 판정은 그리드
+            # 절대 원점이 아니라 이 지점을 기준으로 계산된다.
+            self._baseline_x_moa = sample.x_moa
+            self._baseline_y_moa = sample.y_moa
+            self._baseline_primary = primary_raw
+            self._baseline_cross = cross_raw
+            self._baseline_captured = True
+
+        primary = primary_raw - self._baseline_primary
+        cross = cross_raw - self._baseline_cross
+
         self._last_primary = primary
         self._last_cross = cross
+        self._last_primary_raw = primary_raw
+        self._last_cross_raw = cross_raw
 
         if self.phase == Phase.OUTBOUND:
-            self._max_primary_reached = max(self._max_primary_reached, primary)
-            self._max_abs_cross = max(self._max_abs_cross, abs(cross))
+            if primary > self._max_primary_reached:
+                self._max_primary_reached = primary
+                self._max_primary_reached_raw = primary_raw
+            if abs(cross) > self._max_abs_cross:
+                self._max_abs_cross = abs(cross)
+                self._max_abs_cross_raw = abs(cross_raw)
 
         # StabilityDetector는 (주축, 교차축)을 (x_moa, y_moa) 슬롯에 재사용해서 먹인다
         stability_sample = PositionSample(timestamp_s=sample.timestamp_s, x_moa=primary, y_moa=cross)
@@ -260,6 +294,7 @@ class TravelTestStateMachine:
                 measured_value=self._max_primary_reached,
                 threshold_used=s.travel_target_moa,
                 status=Verdict.PASS if travel_ok else Verdict.FAIL,
+                raw_measured_value=self._max_primary_reached_raw,
             )
         )
         if not travel_ok:
@@ -273,6 +308,7 @@ class TravelTestStateMachine:
                 measured_value=self._max_abs_cross,
                 threshold_used=s.shift_threshold_moa,
                 status=Verdict.PASS if shift_ok else Verdict.FAIL,
+                raw_measured_value=self._max_abs_cross_raw,
             )
         )
         if not shift_ok:
@@ -289,6 +325,7 @@ class TravelTestStateMachine:
                 measured_value=drift_measured,
                 threshold_used=s.drift_threshold_moa,
                 status=Verdict.PASS if drift_ok else Verdict.FAIL,
+                raw_measured_value=abs(self._last_cross_raw),
             )
         )
         if not drift_ok:
@@ -315,6 +352,7 @@ class TravelTestStateMachine:
                 measured_value=backlash_measured,
                 threshold_used=s.backlash_threshold_moa,
                 status=Verdict.PASS if backlash_ok else Verdict.FAIL,
+                raw_measured_value=abs(self._last_primary_raw),
             )
         )
         self._finalize_direction(checks, Verdict.PASS if backlash_ok else Verdict.FAIL)
@@ -326,6 +364,15 @@ class TravelTestStateMachine:
         self._max_abs_cross = 0.0
         self._last_primary = 0.0
         self._last_cross = 0.0
+        self._max_primary_reached_raw = 0.0
+        self._max_abs_cross_raw = 0.0
+        self._last_primary_raw = 0.0
+        self._last_cross_raw = 0.0
+        self._baseline_captured = False
+        self._baseline_x_moa = 0.0
+        self._baseline_y_moa = 0.0
+        self._baseline_primary = 0.0
+        self._baseline_cross = 0.0
         self._pending_checks = []
         self._dead_click_flagged = False
 
@@ -336,8 +383,13 @@ class TravelTestStateMachine:
         attempt_number = self._attempt_counters.get(direction, 0) + 1
         self._attempt_counters[direction] = attempt_number
 
+        start_point = (self._baseline_x_moa, self._baseline_y_moa) if self._baseline_captured else None
         result = DirectionTestResult(
-            direction=direction, attempt_number=attempt_number, verdict=verdict, check_results=checks
+            direction=direction,
+            attempt_number=attempt_number,
+            verdict=verdict,
+            check_results=checks,
+            start_point_moa=start_point,
         )
         self.direction_results.append(result)
 

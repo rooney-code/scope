@@ -63,26 +63,29 @@ class InspectionRepository:
 
         반환값: DirectionResults.Id (자동증가 PK).
         """
+        start_x, start_y = result.start_point_moa if result.start_point_moa is not None else (None, None)
         cur = self._conn.cursor()
         cur.execute(
             """
-            INSERT INTO DirectionResults (SessionId, Direction, AttemptNumber, Verdict, CreatedAt)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO DirectionResults
+                (SessionId, Direction, AttemptNumber, Verdict, StartPointXMoa, StartPointYMoa, CreatedAt)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (session_id, result.direction.value, result.attempt_number, result.verdict.value, _utcnow()),
+            (session_id, result.direction.value, result.attempt_number, result.verdict.value, start_x, start_y, _utcnow()),
         )
         direction_result_id = self._fetch_last_identity(cur)
 
         for check in result.check_results:
             cur.execute(
                 """
-                INSERT INTO CheckResults (DirectionResultId, CheckType, MeasuredValue, ThresholdUsed, Status)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO CheckResults (DirectionResultId, CheckType, MeasuredValue, RawMeasuredValue, ThresholdUsed, Status)
+                VALUES (?, ?, ?, ?, ?, ?)
                 """,
                 (
                     direction_result_id,
                     check.check_type.value,
                     check.measured_value,
+                    check.raw_measured_value,
                     check.threshold_used,
                     check.status.value,
                 ),

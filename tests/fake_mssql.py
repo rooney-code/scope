@@ -45,7 +45,7 @@ class FakeCursor:
             self._db.sessions[session_id]["CompletedAt"] = completed_at
             self._db.sessions[session_id]["OverallVerdict"] = overall_verdict
         elif sql_norm.startswith("INSERT INTO DIRECTIONRESULTS"):
-            session_id, direction, attempt_number, verdict, created_at = params
+            session_id, direction, attempt_number, verdict, start_x, start_y, created_at = params
             self._db.direction_id_seq += 1
             new_id = self._db.direction_id_seq
             self._db.direction_results[new_id] = {
@@ -54,13 +54,15 @@ class FakeCursor:
                 "Direction": direction,
                 "AttemptNumber": attempt_number,
                 "Verdict": verdict,
+                "StartPointXMoa": start_x,
+                "StartPointYMoa": start_y,
                 "CreatedAt": created_at,
             }
             self._db._last_identity = new_id
         elif sql_norm.startswith("SELECT @@IDENTITY"):
             self._last_result = [(self._db._last_identity,)]
         elif sql_norm.startswith("INSERT INTO CHECKRESULTS"):
-            direction_result_id, check_type, measured, threshold, status = params
+            direction_result_id, check_type, measured, raw_measured, threshold, status = params
             self._db.check_id_seq += 1
             self._db.check_results.append(
                 {
@@ -68,6 +70,7 @@ class FakeCursor:
                     "DirectionResultId": direction_result_id,
                     "CheckType": check_type,
                     "MeasuredValue": measured,
+                    "RawMeasuredValue": raw_measured,
                     "ThresholdUsed": threshold,
                     "Status": status,
                 }

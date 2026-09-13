@@ -29,9 +29,14 @@ class Verdict(str, Enum):
 @dataclass
 class CheckResult:
     check_type: CheckType
-    measured_value: float | None
+    measured_value: float | None  # 시작 지점(start_point_moa) 기준으로 보정된 최종값 - 판정에 사용
     threshold_used: float | None
     status: Verdict
+    # 보정 전(그리드 절대 원점 기준) 원시 측정값 - 참고/감사용, 판정에는 쓰이지 않음.
+    # 사용자 확인 사항(2026-09-13): 시험 시작점이 그리드 원점(0,0)과 정확히 일치할 가능성은
+    # 낮으므로(예: 실제로는 (0.1, 0.1)에서 시작), 판정은 항상 시작 지점 기준 상대값으로 해야
+    # 한다 - docs/detection_notes.md 12차 참고.
+    raw_measured_value: float | None = None
 
 
 @dataclass
@@ -40,6 +45,9 @@ class DirectionTestResult:
     attempt_number: int
     verdict: Verdict
     check_results: list[CheckResult] = field(default_factory=list)
+    # 이 방향 시험을 시작한 시점의 실측 좌표(그리드 절대 좌표, MOA) - 모든 CheckResult의
+    # measured_value가 이 지점을 기준(0,0)으로 재계산된 상대값임을 감사할 수 있도록 기록.
+    start_point_moa: tuple[float, float] | None = None
 
 
 @dataclass

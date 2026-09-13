@@ -30,6 +30,11 @@ BEGIN
         Direction      NVARCHAR(10)     NOT NULL,   -- Up|Down|Left|Right
         AttemptNumber  INT              NOT NULL,
         Verdict        NVARCHAR(10)     NOT NULL,   -- 합격 | 불량
+        -- 이 방향 시험을 시작한 시점의 실측 좌표(그리드 절대 좌표, MOA) - CheckResults의
+        -- MeasuredValue가 이 지점을 기준으로 보정된 상대값임을 감사할 수 있도록 기록.
+        -- 사용자 확인 사항(2026-09-13), docs/detection_notes.md 12차 참고.
+        StartPointXMoa FLOAT            NULL,
+        StartPointYMoa FLOAT            NULL,
         CreatedAt      DATETIME2        NOT NULL DEFAULT SYSUTCDATETIME()
     );
 END;
@@ -40,7 +45,9 @@ BEGIN
         Id                  INT IDENTITY(1,1) PRIMARY KEY,
         DirectionResultId   INT           NOT NULL REFERENCES DirectionResults(Id),
         CheckType           NVARCHAR(20)  NOT NULL,  -- TravelAmount|DeadClick|Drift|Shift|Backlash
-        MeasuredValue        FLOAT        NULL,
+        MeasuredValue        FLOAT        NULL,      -- 시작 지점 기준 보정값 - 판정에 사용
+        -- 보정 전(그리드 절대 원점 기준) 원시 측정값 - 참고/감사용.
+        RawMeasuredValue     FLOAT        NULL,
         ThresholdUsed        FLOAT        NULL,
         Status               NVARCHAR(10) NOT NULL   -- 합격 | 불량
     );

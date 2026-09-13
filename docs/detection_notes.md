@@ -306,3 +306,39 @@ X -1.4~35.4, Y -36.2~35.4). 가장 심하게 늘어진 프레임(frame_000022, e
 재현: `PYTHONPATH=. python3 scripts/detect_on_video_image.py` (결과의
 `{name}_shape_compare.jpg`가 ellipse 대 core_circle 비교, `{label}_{name}_liveview.png`가
 실제 화면 그대로의 렌더링).
+
+**참고(0~22프레임 순차 재생 실험, 2026-09-13)**: `video_image/frame_000000.jpg`부터
+`frame_000022.jpg`까지 실제 `RedDotDetector`+`BlobTracker`(11차 수정 반영)로 순서대로 먹여본
+결과, 22번 프레임의 최종 검출 좌표는 `moa=(-1.617, 37.133)` - 21번(elongation 2.02, 왜곡
+보정 적용됨)에서 이미 상방향 가속 추세가 있어, 등속 예측 보정이 그 추세를 반영해 단순
+당시 프레임의 원시(raw) 측정치(35.375)보다 다소 높게(37.1) 보정됨. 0번 프레임 자체도
+`moa=(0.254, -0.905)`로 그리드 절대 원점과 정확히 일치하지 않음을 확인 - 아래 12차 수정의
+동기가 된 실측 사례.
+
+## 12차 수정 (2026-09-13, 판정을 그리드 절대 원점이 아닌 실제 시작점 기준으로 보정)
+
+사용자 지적: "최종적인 오류는 원점에서 벗어난걸 계산하는게 아니라 시작점부터 검사해야
+해!" - 위 실험에서 보듯 시험 시작 시점의 레드닷 위치가 그리드 절대 원점(0,0)과 정확히
+일치할 가능성은 낮다(실측: 0번 프레임이 이미 (0.254,-0.905)). 예를 들어 시작점이
+(0.1, 0.1)이었다면, 쉬프트가 그리드 절대 원점 기준으로 2.4moa로 측정되더라도 실제
+판정에는 시작점 대비 오차인 2.3moa가 쓰여야 한다.
+
+**해결**: `TravelTestStateMachine.feed_position()`이 각 방향 시험의 **첫 샘플**을 그 시험의
+시작점(baseline)으로 확정하고, 이후 모든 주축(primary)/교차축(cross) 값을 baseline 대비
+상대값으로 재계산하도록 변경. 이동량/쉬프트/드리프트/백래쉬 4개 판정 모두 이 보정된
+값(`measured_value`)을 기준으로 합격/불량을 가른다(자동 감지 트리거인 `travel_target_moa`
+도달 여부, `near_zero_band_moa` 복귀 판정도 동일하게 baseline 기준으로 바뀜 - "원점 근처"가
+아니라 "시작점 근처"를 감지하게 됨).
+
+사용자 추가 요청("실측치와 시작 지점과 최종결과(시작 점 보정)를 모두 저장")에 따라 혼동을
+막기 위해 세 가지를 모두 보존:
+- `CheckResult.measured_value` - 시작점 보정된 최종값(판정에 사용, 기존 필드 재사용).
+- `CheckResult.raw_measured_value`(신규) - 그리드 절대 원점 기준 원시 측정값(참고/감사용).
+- `DirectionTestResult.start_point_moa`(신규) - 이 방향 시험을 시작한 실제 좌표(그리드 절대
+  좌표, MOA). `measured_value`가 이 지점 기준 상대값임을 감사할 수 있게 함.
+
+`core/data/schema.sql`/`core/data/repository.py`에도 `DirectionResults.StartPointXMoa/
+StartPointYMoa`, `CheckResults.RawMeasuredValue` 컬럼을 추가해 DB에도 세 값을 모두 저장.
+기존 테스트(전부 (0,0)에서 시작)는 baseline=0이라 raw==corrected로 동일해 회귀 없음 확인.
+신규 테스트(`test_measurements_are_corrected_relative_to_actual_start_point_not_absolute_origin`)로
+(0.1, 0.1) 시작점 + 2.4moa 원시 쉬프트 -> 2.3moa 보정값 케이스를 검증.
