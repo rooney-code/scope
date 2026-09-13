@@ -63,6 +63,19 @@ cd scope
 ```
 Git이 없다면 GitHub에서 ZIP으로 다운로드해 압축을 풀고 해당 폴더로 이동하세요.
 
+### 2-1. 코드를 수정한 뒤 다시 커밋/push하려면
+
+GitHub에 push할 수 있는 계정으로 최초 1회 Git 인증만 설정해두면(SSH 키 등록 또는
+`gh auth login`), 이후에는 매번 권한을 새로 받을 필요 없이 바로 커밋/push할 수 있습니다.
+
+수정 -> 테스트 -> 커밋 -> push를 매번 손으로 하기 번거롭다면 저장소에 포함된 스크립트를
+쓰세요 - 변경사항을 보여주고, 테스트를 자동 실행해 실패하면 커밋을 막고, 커밋 전/push 전
+각각 확인을 받습니다:
+```
+powershell -ExecutionPolicy Bypass -File scripts\commit_and_push.ps1
+```
+(WSL/Linux/Mac에서는 `./scripts/commit_and_push.sh` - 최초 1회 `chmod +x` 필요)
+
 ## 3. 가상환경 생성 (권장)
 
 ```
