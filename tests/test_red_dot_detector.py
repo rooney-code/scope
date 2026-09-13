@@ -1,3 +1,5 @@
+import math
+
 import numpy as np
 import cv2
 
@@ -153,6 +155,26 @@ def test_blob_tracker_blends_toward_prediction_only_when_elongated():
     predicted_x = 120.0  # 110 + (110-100)
     assert abs(r3.center_px[0] - 127.5) < 0.5  # 측정치(135)와 예측치(120)의 중간으로 보정됨
     assert r3.center_px[0] != 135.0
+
+
+def test_blob_tracker_correction_does_not_compound_across_consecutive_elongated_frames():
+    """여러 프레임 연속으로 elongation이 임계값을 넘으면(코멧테일 구간이 몇 프레임 이어지는
+    실측 사례), 예측이 "이전 보정값"이 아니라 항상 "이전 원시 측정치"를 근거로 계산되어야
+    한다 - 그렇지 않으면 매 프레임 오차가 누적되어 결과가 실제 위치에서 점점 멀어진다
+    (실측으로 확인된 회귀 버그, docs/detection_notes.md 12차 후속 수정)."""
+    tracker = BlobTracker(max_jump_px=200, elongation_correction_threshold=1.5, elongation_correction_blend=0.5)
+
+    tracker.select([_detection(1629, 444, 8, 8)])  # 정상 원형 구간
+    # 아래는 실측(frame 19~22)을 단순화한 패턴: 측정치가 예측(등속 외삽) 대비 계속 "덜 이동"함
+    # (감속하며 목표에 다가가는 흔한 패턴) - 매 프레임 원시 측정치를 근거로 예측해야 함.
+    r1 = tracker.select([_detection(1624, 408, 30, 8)])   # elongation=3.75
+    r2 = tracker.select([_detection(1605, 370, 30, 8)])
+    r3 = tracker.select([_detection(1602, 351, 30, 8)])
+    r4 = tracker.select([_detection(1603, 347, 30, 8)])  # 실제로는 거의 안 움직임(방향 반전 근처)
+
+    # 마지막 결과가 원시 측정치(1603, 347)에서 크게 벗어나면 안 된다 - 누적 드리프트
+    # 회귀 확인용(수정 전에는 여러 프레임 연속 보정으로 원시치에서 10px 이상 벗어났었음).
+    assert math.hypot(r4.center_px[0] - 1603, r4.center_px[1] - 347) < 8.5
 
 
 def test_blob_tracker_does_not_blend_circular_dot():

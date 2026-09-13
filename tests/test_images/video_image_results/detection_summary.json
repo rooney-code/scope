@@ -32,7 +32,7 @@
         26.288488388061523
       ],
       "elongation": 1.003381407688582,
-      "core_circle_radius_px": 13.027080535888672
+      "core_circle_radius_px": 13.5
     },
     {
       "frame": "frame_000001.jpg",
@@ -50,7 +50,7 @@
         26.411827087402344
       ],
       "elongation": 1.0170098696360206,
-      "core_circle_radius_px": 12.912354469299316
+      "core_circle_radius_px": 13.5
     },
     {
       "frame": "frame_000002.jpg",
@@ -68,7 +68,7 @@
         26.384674072265625
       ],
       "elongation": 1.0120845806510332,
-      "core_circle_radius_px": 12.746286392211914
+      "core_circle_radius_px": 13.5
     },
     {
       "frame": "frame_000003.jpg",
@@ -86,7 +86,7 @@
         26.383546829223633
       ],
       "elongation": 1.0209871571491436,
-      "core_circle_radius_px": 12.837018966674805
+      "core_circle_radius_px": 13.5
     },
     {
       "frame": "frame_000004.jpg",
@@ -104,7 +104,7 @@
         26.467514038085938
       ],
       "elongation": 1.0360390258339303,
-      "core_circle_radius_px": 13.09683895111084
+      "core_circle_radius_px": 13.0
     },
     {
       "frame": "frame_000005.jpg",
@@ -122,7 +122,7 @@
         26.409799575805664
       ],
       "elongation": 1.0385249828260579,
-      "core_circle_radius_px": 12.780202865600586
+      "core_circle_radius_px": 12.5
     },
     {
       "frame": "frame_000006.jpg",
@@ -140,7 +140,7 @@
         26.268735885620117
       ],
       "elongation": 1.0282680742467747,
-      "core_circle_radius_px": 13.125714302062988
+      "core_circle_radius_px": 13.0
     },
     {
       "frame": "frame_000007.jpg",
@@ -158,7 +158,7 @@
         26.28591537475586
       ],
       "elongation": 1.041081793958059,
-      "core_circle_radius_px": 12.985151290893555
+      "core_circle_radius_px": 13.0
     },
     {
       "frame": "frame_000008.jpg",
@@ -176,7 +176,7 @@
         26.278030395507812
       ],
       "elongation": 1.0589166201472955,
-      "core_circle_radius_px": 12.81567668914795
+      "core_circle_radius_px": 13.0
     },
     {
       "frame": "frame_000009.jpg",
@@ -194,7 +194,7 @@
         26.55249786376953
       ],
       "elongation": 1.066006348949642,
-      "core_circle_radius_px": 12.816105842590332
+      "core_circle_radius_px": 13.0
     },
     {
       "frame": "frame_000010.jpg",
@@ -212,7 +212,7 @@
         27.341995239257812
       ],
       "elongation": 1.1273917224349543,
-      "core_circle_radius_px": 12.708686828613281
+      "core_circle_radius_px": 12.5
     },
     {
       "frame": "frame_000011.jpg",
@@ -230,7 +230,7 @@
         28.613204956054688
       ],
       "elongation": 1.195321329518052,
-      "core_circle_radius_px": 12.592260360717773
+      "core_circle_radius_px": 13.0
     },
     {
       "frame": "frame_000012.jpg",
@@ -248,7 +248,7 @@
         28.20445442199707
       ],
       "elongation": 1.1848084825268423,
-      "core_circle_radius_px": 12.40291976928711
+      "core_circle_radius_px": 12.5
     },
     {
       "frame": "frame_000013.jpg",
@@ -266,7 +266,7 @@
         28.18619728088379
       ],
       "elongation": 1.1702421925570123,
-      "core_circle_radius_px": 12.753243446350098
+      "core_circle_radius_px": 12.5
     },
     {
       "frame": "frame_000014.jpg",
@@ -284,7 +284,7 @@
         29.375627517700195
       ],
       "elongation": 1.1966988328967043,
-      "core_circle_radius_px": 13.47377872467041
+      "core_circle_radius_px": 13.0
     },
     {
       "frame": "frame_000015.jpg",
@@ -302,7 +302,7 @@
         32.44694137573242
       ],
       "elongation": 1.3345591964563723,
-      "core_circle_radius_px": 13.707420349121094
+      "core_circle_radius_px": 12.5
     },
     {
       "frame": "frame_000016.jpg",
@@ -320,7 +320,7 @@
         34.58160400390625
       ],
       "elongation": 1.4343994408833334,
-      "core_circle_radius_px": 13.647443771362305
+      "core_circle_radius_px": 12.5
     },
     {
       "frame": "frame_000017.jpg",
@@ -338,7 +338,7 @@
         36.34805679321289
       ],
       "elongation": 1.6239975845647345,
-      "core_circle_radius_px": 12.619529724121094
+      "core_circle_radius_px": 12.0
     },
     {
       "frame": "frame_000018.jpg",
@@ -356,133 +356,133 @@
         34.725311279296875
       ],
       "elongation": 1.498089461282966,
-      "core_circle_radius_px": 13.124505043029785
+      "core_circle_radius_px": 12.5
     },
     {
       "frame": "frame_000019.jpg",
       "found": true,
       "center_px": [
-        1626.7017055057427,
-        426.3339502012592
+        1625.6267005090137,
+        424.1456136739167
       ],
       "moa": [
-        1.642,
-        26.841
+        1.527,
+        27.075
       ],
       "ellipse_axes": [
         22.4123477935791,
         38.12874221801758
       ],
       "elongation": 1.7012381999953194,
-      "core_circle_radius_px": 12.865339279174805
+      "core_circle_radius_px": 11.5
     },
     {
       "frame": "frame_000020.jpg",
       "found": true,
       "center_px": [
-        1614.6323655121287,
-        389.32360156530183
+        1612.4604098571078,
+        370.7056926004965
       ],
       "moa": [
-        0.351,
-        30.799
+        0.119,
+        32.79
       ],
       "ellipse_axes": [
         21.519906997680664,
         37.01987838745117
       ],
       "elongation": 1.7202620063107632,
-      "core_circle_radius_px": 13.162771224975586
+      "core_circle_radius_px": 10.5
     },
     {
       "frame": "frame_000021.jpg",
       "found": true,
       "center_px": [
-        1602.2697740540273,
-        351.49249253029535
+        1593.8699585913873,
+        341.68614612908834
       ],
       "moa": [
-        -0.971,
-        34.845
+        -1.869,
+        35.894
       ],
       "ellipse_axes": [
         19.089813232421875,
         38.614933013916016
       ],
       "elongation": 2.022803080563038,
-      "core_circle_radius_px": 13.191902160644531
+      "core_circle_radius_px": 10.0
     },
     {
       "frame": "frame_000022.jpg",
       "found": true,
       "center_px": [
-        1596.2303529332116,
-        330.0984728558617
+        1600.6799981137995,
+        338.83536289861746
       ],
       "moa": [
-        -1.617,
-        37.133
+        -1.141,
+        36.199
       ],
       "ellipse_axes": [
         18.496126174926758,
         40.25228500366211
       ],
       "elongation": 2.1762548883467216,
-      "core_circle_radius_px": 13.238302230834961
+      "core_circle_radius_px": 10.0
     },
     {
       "frame": "frame_000023.jpg",
       "found": true,
       "center_px": [
-        1596.2275252871937,
-        329.5618543353943
+        1602.6973213567233,
+        346.40932389549175
       ],
       "moa": [
-        -1.617,
-        37.191
+        -0.925,
+        35.389
       ],
       "ellipse_axes": [
         18.665504455566406,
         39.65624237060547
       ],
       "elongation": 2.1245738343160196,
-      "core_circle_radius_px": 13.125011444091797
+      "core_circle_radius_px": 10.0
     },
     {
       "frame": "frame_000024.jpg",
       "found": true,
       "center_px": [
-        1597.2957758602224,
-        358.86196111906463
+        1600.1707841663767,
+        371.5008175927445
       ],
       "moa": [
-        -1.503,
-        34.057
+        -1.195,
+        32.705
       ],
       "ellipse_axes": [
         21.653501510620117,
         39.26679611206055
       ],
       "elongation": 1.813415538951142,
-      "core_circle_radius_px": 13.173177719116211
+      "core_circle_radius_px": 11.0
     },
     {
       "frame": "frame_000025.jpg",
       "found": true,
       "center_px": [
-        1600.3901388329723,
-        403.9532121047407
+        1598.44292031462,
+        423.3612368318953
       ],
       "moa": [
-        -1.172,
-        29.235
+        -1.38,
+        27.159
       ],
       "ellipse_axes": [
         23.689048767089844,
         36.36095428466797
       ],
       "elongation": 1.5349267352255465,
-      "core_circle_radius_px": 12.855758666992188
+      "core_circle_radius_px": 12.0
     },
     {
       "frame": "frame_000026.jpg",
@@ -500,7 +500,7 @@
         34.711456298828125
       ],
       "elongation": 1.4025206962510153,
-      "core_circle_radius_px": 13.225651741027832
+      "core_circle_radius_px": 12.0
     },
     {
       "frame": "frame_000027.jpg",
@@ -518,7 +518,7 @@
         34.11635971069336
       ],
       "elongation": 1.4364314678653152,
-      "core_circle_radius_px": 13.011271476745605
+      "core_circle_radius_px": 12.5
     },
     {
       "frame": "frame_000028.jpg",
@@ -536,7 +536,7 @@
         34.164390563964844
       ],
       "elongation": 1.4416592170394136,
-      "core_circle_radius_px": 13.200478553771973
+      "core_circle_radius_px": 12.5
     },
     {
       "frame": "frame_000029.jpg",
@@ -554,7 +554,7 @@
         33.24738693237305
       ],
       "elongation": 1.4206015680628483,
-      "core_circle_radius_px": 13.479594230651855
+      "core_circle_radius_px": 12.5
     },
     {
       "frame": "frame_000030.jpg",
@@ -572,7 +572,7 @@
         31.196243286132812
       ],
       "elongation": 1.3133148790549936,
-      "core_circle_radius_px": 13.473777770996094
+      "core_circle_radius_px": 12.0
     },
     {
       "frame": "frame_000031.jpg",
@@ -590,7 +590,7 @@
         28.426626205444336
       ],
       "elongation": 1.1384698083656843,
-      "core_circle_radius_px": 13.162771224975586
+      "core_circle_radius_px": 12.0
     },
     {
       "frame": "frame_000032.jpg",
@@ -608,7 +608,7 @@
         28.120723724365234
       ],
       "elongation": 1.1685232231911553,
-      "core_circle_radius_px": 12.382221221923828
+      "core_circle_radius_px": 13.0
     },
     {
       "frame": "frame_000033.jpg",
@@ -626,7 +626,7 @@
         27.80470848083496
       ],
       "elongation": 1.147727597496232,
-      "core_circle_radius_px": 12.358656883239746
+      "core_circle_radius_px": 12.5
     },
     {
       "frame": "frame_000034.jpg",
@@ -644,7 +644,7 @@
         28.106830596923828
       ],
       "elongation": 1.1701042408681153,
-      "core_circle_radius_px": 12.420559883117676
+      "core_circle_radius_px": 13.0
     },
     {
       "frame": "frame_000035.jpg",
@@ -662,7 +662,7 @@
         27.64285659790039
       ],
       "elongation": 1.1383127437490976,
-      "core_circle_radius_px": 12.389388084411621
+      "core_circle_radius_px": 13.0
     },
     {
       "frame": "frame_000036.jpg",
@@ -680,7 +680,7 @@
         25.823020935058594
       ],
       "elongation": 1.0285327490746874,
-      "core_circle_radius_px": 12.659717559814453
+      "core_circle_radius_px": 12.5
     },
     {
       "frame": "frame_000037.jpg",
@@ -698,7 +698,7 @@
         25.853317260742188
       ],
       "elongation": 1.0146113761973323,
-      "core_circle_radius_px": 12.800216674804688
+      "core_circle_radius_px": 13.0
     },
     {
       "frame": "frame_000038.jpg",
@@ -716,7 +716,7 @@
         26.8165225982666
       ],
       "elongation": 1.0289823792860113,
-      "core_circle_radius_px": 13.200478553771973
+      "core_circle_radius_px": 13.0
     },
     {
       "frame": "frame_000039.jpg",
@@ -734,7 +734,7 @@
         27.60479164123535
       ],
       "elongation": 1.0896831470935795,
-      "core_circle_radius_px": 12.996488571166992
+      "core_circle_radius_px": 13.0
     },
     {
       "frame": "frame_000040.jpg",
@@ -752,7 +752,7 @@
         27.090070724487305
       ],
       "elongation": 1.0518543572271835,
-      "core_circle_radius_px": 13.209944725036621
+      "core_circle_radius_px": 13.5
     },
     {
       "frame": "frame_000041.jpg",
@@ -770,7 +770,7 @@
         26.59296226501465
       ],
       "elongation": 1.03085099209559,
-      "core_circle_radius_px": 12.979048728942871
+      "core_circle_radius_px": 13.5
     },
     {
       "frame": "frame_000042.jpg",
@@ -788,7 +788,7 @@
         27.261690139770508
       ],
       "elongation": 1.0474793325318743,
-      "core_circle_radius_px": 13.235983848571777
+      "core_circle_radius_px": 13.5
     },
     {
       "frame": "frame_000043.jpg",
@@ -806,7 +806,7 @@
         28.251806259155273
       ],
       "elongation": 1.0669520932406602,
-      "core_circle_radius_px": 13.257750511169434
+      "core_circle_radius_px": 13.5
     },
     {
       "frame": "frame_000044.jpg",
@@ -824,7 +824,7 @@
         29.108510971069336
       ],
       "elongation": 1.090538632900357,
-      "core_circle_radius_px": 13.16959285736084
+      "core_circle_radius_px": 14.0
     },
     {
       "frame": "frame_000045.jpg",
@@ -842,7 +842,7 @@
         30.32913589477539
       ],
       "elongation": 1.1109024387006359,
-      "core_circle_radius_px": 13.18612289428711
+      "core_circle_radius_px": 14.0
     },
     {
       "frame": "frame_000046.jpg",
@@ -860,7 +860,7 @@
         30.04401397705078
       ],
       "elongation": 1.1053080301739375,
-      "core_circle_radius_px": 13.197202682495117
+      "core_circle_radius_px": 14.0
     },
     {
       "frame": "frame_000047.jpg",
@@ -878,7 +878,7 @@
         30.483007431030273
       ],
       "elongation": 1.1225731330648698,
-      "core_circle_radius_px": 13.195053100585938
+      "core_circle_radius_px": 14.0
     },
     {
       "frame": "frame_000048.jpg",
@@ -896,7 +896,7 @@
         29.955524444580078
       ],
       "elongation": 1.1316081987998499,
-      "core_circle_radius_px": 13.096028327941895
+      "core_circle_radius_px": 13.5
     },
     {
       "frame": "frame_000049.jpg",
@@ -914,7 +914,7 @@
         28.82767677307129
       ],
       "elongation": 1.1116337649708092,
-      "core_circle_radius_px": 12.786612510681152
+      "core_circle_radius_px": 13.5
     },
     {
       "frame": "frame_000050.jpg",
@@ -932,7 +932,7 @@
         29.0550479888916
       ],
       "elongation": 1.1185146350964028,
-      "core_circle_radius_px": 12.82192611694336
+      "core_circle_radius_px": 13.5
     },
     {
       "frame": "frame_000051.jpg",
@@ -950,7 +950,7 @@
         29.570884704589844
       ],
       "elongation": 1.1334734463181009,
-      "core_circle_radius_px": 12.233680725097656
+      "core_circle_radius_px": 13.5
     },
     {
       "frame": "frame_000052.jpg",
@@ -968,7 +968,7 @@
         29.17701530456543
       ],
       "elongation": 1.1023834569685411,
-      "core_circle_radius_px": 11.711008071899414
+      "core_circle_radius_px": 14.0
     },
     {
       "frame": "frame_000053.jpg",
@@ -986,7 +986,7 @@
         28.210527420043945
       ],
       "elongation": 1.0459124182308626,
-      "core_circle_radius_px": 11.625772476196289
+      "core_circle_radius_px": 14.0
     },
     {
       "frame": "frame_000054.jpg",
@@ -1004,7 +1004,7 @@
         27.928489685058594
       ],
       "elongation": 1.064624594528529,
-      "core_circle_radius_px": 11.201085090637207
+      "core_circle_radius_px": 14.0
     },
     {
       "frame": "frame_000055.jpg",
@@ -1022,7 +1022,7 @@
         27.024030685424805
       ],
       "elongation": 1.0412225163259927,
-      "core_circle_radius_px": 10.879900932312012
+      "core_circle_radius_px": 13.5
     },
     {
       "frame": "frame_000056.jpg",
@@ -1040,7 +1040,7 @@
         26.046001434326172
       ],
       "elongation": 1.0102127196819248,
-      "core_circle_radius_px": 10.531713485717773
+      "core_circle_radius_px": 13.5
     },
     {
       "frame": "frame_000057.jpg",
@@ -1058,7 +1058,7 @@
         26.250492095947266
       ],
       "elongation": 1.0387329569653352,
-      "core_circle_radius_px": 10.585230827331543
+      "core_circle_radius_px": 13.0
     },
     {
       "frame": "frame_000058.jpg",
@@ -1076,7 +1076,7 @@
         27.19260025024414
       ],
       "elongation": 1.0467015191420026,
-      "core_circle_radius_px": 11.19137954711914
+      "core_circle_radius_px": 13.5
     },
     {
       "frame": "frame_000059.jpg",
@@ -1094,7 +1094,7 @@
         28.61435890197754
       ],
       "elongation": 1.0553648942729743,
-      "core_circle_radius_px": 11.264847755432129
+      "core_circle_radius_px": 14.5
     },
     {
       "frame": "frame_000060.jpg",
@@ -1112,7 +1112,7 @@
         29.893877029418945
       ],
       "elongation": 1.0904710315515767,
-      "core_circle_radius_px": 11.935775756835938
+      "core_circle_radius_px": 14.5
     },
     {
       "frame": "frame_000061.jpg",
@@ -1130,7 +1130,7 @@
         29.223819732666016
       ],
       "elongation": 1.1172007684789467,
-      "core_circle_radius_px": 12.855060577392578
+      "core_circle_radius_px": 13.5
     },
     {
       "frame": "frame_000062.jpg",
@@ -1148,7 +1148,7 @@
         30.112375259399414
       ],
       "elongation": 1.1452022744523649,
-      "core_circle_radius_px": 13.01970100402832
+      "core_circle_radius_px": 14.0
     },
     {
       "frame": "frame_000063.jpg",
@@ -1166,7 +1166,7 @@
         29.8962459564209
       ],
       "elongation": 1.1346008516685482,
-      "core_circle_radius_px": 13.102911949157715
+      "core_circle_radius_px": 14.0
     },
     {
       "frame": "frame_000064.jpg",
@@ -1184,7 +1184,7 @@
         30.093381881713867
       ],
       "elongation": 1.145565272560052,
-      "core_circle_radius_px": 13.069475173950195
+      "core_circle_radius_px": 13.5
     },
     {
       "frame": "frame_000065.jpg",
@@ -1202,7 +1202,7 @@
         29.91413116455078
       ],
       "elongation": 1.1362737822525297,
-      "core_circle_radius_px": 13.314396858215332
+      "core_circle_radius_px": 14.0
     },
     {
       "frame": "frame_000066.jpg",
@@ -1220,7 +1220,7 @@
         29.370529174804688
       ],
       "elongation": 1.0837871630764164,
-      "core_circle_radius_px": 13.305542945861816
+      "core_circle_radius_px": 14.0
     },
     {
       "frame": "frame_000067.jpg",
@@ -1238,7 +1238,7 @@
         28.347339630126953
       ],
       "elongation": 1.0815506968725044,
-      "core_circle_radius_px": 13.260265350341797
+      "core_circle_radius_px": 14.0
     },
     {
       "frame": "frame_000068.jpg",
@@ -1256,7 +1256,7 @@
         26.49053192138672
       ],
       "elongation": 1.0483681479287421,
-      "core_circle_radius_px": 12.628890037536621
+      "core_circle_radius_px": 13.0
     },
     {
       "frame": "frame_000069.jpg",
@@ -1274,7 +1274,7 @@
         25.819377899169922
       ],
       "elongation": 1.0294591723025937,
-      "core_circle_radius_px": 12.972848892211914
+      "core_circle_radius_px": 13.0
     },
     {
       "frame": "frame_000070.jpg",
@@ -1292,7 +1292,7 @@
         26.946697235107422
       ],
       "elongation": 1.0573787558615697,
-      "core_circle_radius_px": 13.045390129089355
+      "core_circle_radius_px": 13.0
     },
     {
       "frame": "frame_000071.jpg",
@@ -1310,7 +1310,7 @@
         26.64495277404785
       ],
       "elongation": 1.0465782388205132,
-      "core_circle_radius_px": 12.9375
+      "core_circle_radius_px": 13.0
     },
     {
       "frame": "frame_000072.jpg",
@@ -1328,7 +1328,7 @@
         26.30297088623047
       ],
       "elongation": 1.0190890966890527,
-      "core_circle_radius_px": 12.855758666992188
+      "core_circle_radius_px": 13.5
     },
     {
       "frame": "frame_000073.jpg",
@@ -1346,7 +1346,7 @@
         26.305004119873047
       ],
       "elongation": 1.0185000381437233,
-      "core_circle_radius_px": 12.96534252166748
+      "core_circle_radius_px": 13.5
     },
     {
       "frame": "frame_000074.jpg",
@@ -1364,7 +1364,7 @@
         26.320411682128906
       ],
       "elongation": 1.018751497732306,
-      "core_circle_radius_px": 13.057453155517578
+      "core_circle_radius_px": 13.5
     },
     {
       "frame": "frame_000075.jpg",
@@ -1382,7 +1382,7 @@
         26.52476692199707
       ],
       "elongation": 1.0261686484189025,
-      "core_circle_radius_px": 13.048145294189453
+      "core_circle_radius_px": 13.5
     },
     {
       "frame": "frame_000076.jpg",
@@ -1400,7 +1400,7 @@
         26.221776962280273
       ],
       "elongation": 1.0151268169850154,
-      "core_circle_radius_px": 13.048145294189453
+      "core_circle_radius_px": 13.5
     },
     {
       "frame": "frame_000077.jpg",
@@ -1418,7 +1418,7 @@
         26.29463005065918
       ],
       "elongation": 1.0214711866617072,
-      "core_circle_radius_px": 13.153046607971191
+      "core_circle_radius_px": 13.5
     },
     {
       "frame": "frame_000078.jpg",
@@ -1436,7 +1436,7 @@
         26.58738899230957
       ],
       "elongation": 1.02497320184726,
-      "core_circle_radius_px": 13.008834838867188
+      "core_circle_radius_px": 13.5
     },
     {
       "frame": "frame_000079.jpg",
@@ -1454,7 +1454,7 @@
         26.360021591186523
       ],
       "elongation": 1.025708843636776,
-      "core_circle_radius_px": 12.87558364868164
+      "core_circle_radius_px": 13.5
     },
     {
       "frame": "frame_000080.jpg",
@@ -1472,7 +1472,7 @@
         26.378276824951172
       ],
       "elongation": 1.0185492614387457,
-      "core_circle_radius_px": 12.69687557220459
+      "core_circle_radius_px": 13.5
     },
     {
       "frame": "frame_000081.jpg",
@@ -1490,7 +1490,7 @@
         26.758895874023438
       ],
       "elongation": 1.042990775100466,
-      "core_circle_radius_px": 12.900177001953125
+      "core_circle_radius_px": 13.5
     },
     {
       "frame": "frame_000082.jpg",
@@ -1508,7 +1508,7 @@
         26.653499603271484
       ],
       "elongation": 1.0528390076870806,
-      "core_circle_radius_px": 13.032638549804688
+      "core_circle_radius_px": 13.0
     },
     {
       "frame": "frame_000083.jpg",
@@ -1526,7 +1526,7 @@
         26.932228088378906
       ],
       "elongation": 1.071925732924146,
-      "core_circle_radius_px": 12.922943115234375
+      "core_circle_radius_px": 13.0
     },
     {
       "frame": "frame_000084.jpg",
@@ -1544,7 +1544,7 @@
         27.248249053955078
       ],
       "elongation": 1.0665564020425184,
-      "core_circle_radius_px": 13.090494155883789
+      "core_circle_radius_px": 13.5
     },
     {
       "frame": "frame_000085.jpg",
@@ -1562,7 +1562,7 @@
         27.750688552856445
       ],
       "elongation": 1.0808739942038805,
-      "core_circle_radius_px": 12.92348575592041
+      "core_circle_radius_px": 13.5
     },
     {
       "frame": "frame_000086.jpg",
@@ -1580,7 +1580,7 @@
         27.613304138183594
       ],
       "elongation": 1.0596449577157911,
-      "core_circle_radius_px": 12.902830123901367
+      "core_circle_radius_px": 14.0
     },
     {
       "frame": "frame_000087.jpg",
@@ -1598,7 +1598,7 @@
         28.176712036132812
       ],
       "elongation": 1.0778333733281784,
-      "core_circle_radius_px": 13.128053665161133
+      "core_circle_radius_px": 14.0
     },
     {
       "frame": "frame_000088.jpg",
@@ -1616,7 +1616,7 @@
         30.051652908325195
       ],
       "elongation": 1.1339679952809514,
-      "core_circle_radius_px": 13.147577285766602
+      "core_circle_radius_px": 14.5
     },
     {
       "frame": "frame_000089.jpg",
@@ -1634,7 +1634,7 @@
         31.464555740356445
       ],
       "elongation": 1.18762303963596,
-      "core_circle_radius_px": 12.826096534729004
+      "core_circle_radius_px": 15.0
     },
     {
       "frame": "frame_000090.jpg",
@@ -1652,7 +1652,7 @@
         31.46345329284668
       ],
       "elongation": 1.2204257130643519,
-      "core_circle_radius_px": 12.770346641540527
+      "core_circle_radius_px": 15.0
     },
     {
       "frame": "frame_000091.jpg",
@@ -1670,7 +1670,7 @@
         31.84881019592285
       ],
       "elongation": 1.2630056585821603,
-      "core_circle_radius_px": 12.488110542297363
+      "core_circle_radius_px": 14.5
     },
     {
       "frame": "frame_000092.jpg",
@@ -1688,7 +1688,7 @@
         32.45494079589844
       ],
       "elongation": 1.3096092530532049,
-      "core_circle_radius_px": 12.607672691345215
+      "core_circle_radius_px": 15.0
     },
     {
       "frame": "frame_000093.jpg",
@@ -1706,7 +1706,7 @@
         32.42378616333008
       ],
       "elongation": 1.3035769415812883,
-      "core_circle_radius_px": 12.592260360717773
+      "core_circle_radius_px": 15.0
     },
     {
       "frame": "frame_000094.jpg",
@@ -1724,7 +1724,7 @@
         32.06773376464844
       ],
       "elongation": 1.2739033498373404,
-      "core_circle_radius_px": 12.714960098266602
+      "core_circle_radius_px": 14.5
     },
     {
       "frame": "frame_000095.jpg",
@@ -1742,7 +1742,7 @@
         31.44734001159668
       ],
       "elongation": 1.1912234576936085,
-      "core_circle_radius_px": 12.920543670654297
+      "core_circle_radius_px": 15.0
     },
     {
       "frame": "frame_000096.jpg",
@@ -1760,7 +1760,7 @@
         29.832386016845703
       ],
       "elongation": 1.1235476573269014,
-      "core_circle_radius_px": 13.359753608703613
+      "core_circle_radius_px": 14.0
     },
     {
       "frame": "frame_000097.jpg",
@@ -1778,7 +1778,7 @@
         27.975341796875
       ],
       "elongation": 1.0597250347187326,
-      "core_circle_radius_px": 13.022002220153809
+      "core_circle_radius_px": 13.5
     },
     {
       "frame": "frame_000098.jpg",
@@ -1796,7 +1796,7 @@
         27.470382690429688
       ],
       "elongation": 1.0503565988304908,
-      "core_circle_radius_px": 13.180810928344727
+      "core_circle_radius_px": 14.0
     },
     {
       "frame": "frame_000099.jpg",
@@ -1814,7 +1814,7 @@
         28.052616119384766
       ],
       "elongation": 1.0874763486011017,
-      "core_circle_radius_px": 13.253302574157715
+      "core_circle_radius_px": 14.0
     }
   ]
 }

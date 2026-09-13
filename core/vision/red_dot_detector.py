@@ -23,8 +23,9 @@ class DetectionResult:
     found: bool
     center_px: tuple[float, float] | None = None
     ellipse: tuple[tuple[float, float], tuple[float, float], float] | None = None  # (center,(w,h),angle)
-    # 밝기 상위 영역("코어")만의 최소외접원 - (center, radius). 코멧테일 꼬리를 제외한
-    # 실제 원형 LED 광원의 형상을 나타낸다(ellipse는 꼬리까지 포함해 늘어져 보일 수 있음).
+    # 바운딩박스를 짧은 변 크기의 정사각형들로 나눴을 때 가장 밝은 정사각형 - (center, radius
+    # = 정사각형 한 변의 절반). 코멧테일 꼬리를 제외한 실제 원형 LED 광원의 형상을 나타낸다
+    # (ellipse는 꼬리까지 포함해 늘어져 보일 수 있음). _fit_head_square() 참고.
     core_circle: tuple[tuple[float, float], float] | None = None
     contour: np.ndarray | None = None
     area_px2: float = 0.0
@@ -71,7 +72,7 @@ class RedDotDetector:
             if len(contour) >= 5:
                 ellipse = cv2.fitEllipse(contour)
 
-            core_circle = self._fit_core_circle(contour, mask, value_channel, s.core_brightness_ratio)
+            core_circle = self._fit_head_square(contour, mask, value_channel)
 
             results.append(
                 DetectionResult(
@@ -117,40 +118,60 @@ class RedDotDetector:
         return (cx, cy)
 
     @staticmethod
-    def _fit_core_circle(
-        contour: np.ndarray, mask: np.ndarray, value_channel: np.ndarray, ratio: float
+    def _fit_head_square(
+        contour: np.ndarray, mask: np.ndarray, value_channel: np.ndarray
     ) -> tuple[tuple[float, float], float] | None:
-        """윤곽선 내부에서 밝기 상위(코어) 영역만 최소외접원으로 감싼다.
+        """윤곽선의 바운딩박스를 정사각형(한 변 = 짧은 변, 즉 늘어지지 않은 방향의 폭)들의
+        연속으로 나눠보고, 그중 가장 밝은 정사각형을 "머리"(실제 원형 LED 광원)로 본다.
 
-        코멧테일 꼬리는 어둡지만 여전히 HSV 임계값을 넘어 윤곽선(및 fitEllipse)에 포함되므로,
-        형상만 보면 늘어진 타원으로 보인다. 하지만 실제 레드닷(LED)은 항상 원형이고 꼬리는
-        광학적 산란일 뿐이므로, 블롭 내부의 (최소~최대) 밝기 범위에서 상위 `ratio` 구간에
-        속하는 픽셀("코어")만으로 원을 피팅해 실제 형상에 맞는 원형 결과를 낸다. 절대 밝기
-        (예: 최대값의 X%) 대신 블롭 내 상대 범위를 쓰는 이유는 settings.py의
-        core_brightness_ratio 주석 참고.
+        코멧테일 꼬리는 늘어지는 방향으로만 길어지고 폭(짧은 변)은 거의 그대로 유지된다
+        (실측으로 확인 - docs/detection_notes.md 10차 참고: 중심 부근 원형 폭 27px, 35MOA
+        부근 늘어진 폭도 20px로 큰 차이 없음). 즉 짧은 변 길이가 곧 실제 LED 코어의 지름에
+        해당하므로, 바운딩박스를 그 폭 크기의 정사각형들로 나누면 각 정사각형이 대략
+        "그 위치의 단면"을 나타내고, 가장 밝은 정사각형이 꼬리가 아닌 머리다. 절대/상대 밝기
+        임계값을 튜닝할 필요가 없는 순수 기하학적 방법(사용자 제안, 2026-09-13).
         """
         x, y, w, h = cv2.boundingRect(contour)
         if w <= 0 or h <= 0:
+            return None
+
+        side = min(w, h)
+        if side <= 0:
             return None
 
         local_mask = np.zeros((h, w), dtype=np.uint8)
         cv2.drawContours(local_mask, [contour], -1, 255, thickness=cv2.FILLED, offset=(-x, -y))
         local_mask = cv2.bitwise_and(local_mask, mask[y : y + h, x : x + w])
 
-        brightness = value_channel[y : y + h, x : x + w]
-        blob_brightness = brightness[local_mask > 0]
-        if blob_brightness.size == 0:
-            return None
+        vertical = h >= w
+        length = h if vertical else w
+        segment_count = max(1, round(length / side))
 
-        b_min, b_max = float(blob_brightness.min()), float(blob_brightness.max())
-        threshold = b_min + ratio * (b_max - b_min)
-        core_mask = np.where((local_mask > 0) & (brightness >= threshold), 255, 0).astype(np.uint8)
-        points = cv2.findNonZero(core_mask)
-        if points is None:
-            return None
+        best_center: tuple[float, float] | None = None
+        best_brightness = -1.0
+        for i in range(segment_count):
+            lo = int(round(i * length / segment_count))
+            hi = int(round((i + 1) * length / segment_count))
+            if vertical:
+                seg_mask = local_mask[lo:hi, :] > 0
+                seg_value = value_channel[y + lo : y + hi, x : x + w]
+                center = (x + w / 2.0, y + (lo + hi) / 2.0)
+            else:
+                seg_mask = local_mask[:, lo:hi] > 0
+                seg_value = value_channel[y : y + h, x + lo : x + hi]
+                center = (x + (lo + hi) / 2.0, y + h / 2.0)
 
-        (cx, cy), radius = cv2.minEnclosingCircle(points)
-        return ((cx + x, cy + y), radius)
+            count = int(seg_mask.sum())
+            if count == 0:
+                continue
+            avg_brightness = float(seg_value[seg_mask].astype(np.float64).sum()) / count
+            if avg_brightness > best_brightness:
+                best_brightness = avg_brightness
+                best_center = center
+
+        if best_center is None:
+            return None
+        return (best_center, side / 2.0)
 
     def detect_best(self, frame_bgr: np.ndarray) -> DetectionResult:
         """가장 큰 블롭 하나만 반환 (연속성 게이팅이 필요 없는 단순한 경우)."""

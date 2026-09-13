@@ -342,3 +342,30 @@ StartPointYMoa`, `CheckResults.RawMeasuredValue` 컬럼을 추가해 DB에도 �
 기존 테스트(전부 (0,0)에서 시작)는 baseline=0이라 raw==corrected로 동일해 회귀 없음 확인.
 신규 테스트(`test_measurements_are_corrected_relative_to_actual_start_point_not_absolute_origin`)로
 (0.1, 0.1) 시작점 + 2.4moa 원시 쉬프트 -> 2.3moa 보정값 케이스를 검증.
+
+## 13차 수정 (2026-09-13, BlobTracker 누적 드리프트 버그 수정 + core_circle을 정사각형 분할 방식으로 교체)
+
+**버그 발견**: 22번 프레임 최종(추적 보정 적용) 결과 이미지를 사용자가 육안 확인 - "레드닷의
+중심이 원의 중심에 있다기보단 직사각형의 왼쪽 모서리에 있어보여". 원인은 11차 수정에서 추가한
+`BlobTracker`의 등속 예측이 **"이전 프레임의 보정된(blend) 출력값"**을 다음 예측의 근거로 삼고
+있었던 것 - 20, 21, 22번처럼 elongation이 임계값을 넘는 프레임이 연속되면, 매 프레임 보정이
+그 다음 예측에 그대로 반영되어 오차가 누적됨(실측: frame 22 최종 좌표가 원시 측정치에서 약
+6.3px, frame 20~22 3프레임 누적으로는 원시치 대비 10px 이상 벗어남). **해결**: 예측(속도)의
+근거를 항상 **원시(raw) 측정치 이력**으로만 갱신하도록 변경(`BlobTracker._last_raw_position`/
+`_prev_raw_position`) - blend된 출력은 반환값으로만 쓰이고 다음 예측에는 영향을 주지 않음.
+회귀 테스트(`test_blob_tracker_correction_does_not_compound_across_consecutive_elongated_frames`)로
+연속 3~4프레임 왜곡 구간에서도 원시치 대비 크게 벗어나지 않음을 확인.
+
+**core_circle 알고리즘 교체**: 11차 수정의 `core_brightness_ratio`(블롭 내 상대 밝기 임계값)
+방식은 동작은 했지만 튜닝 상수(0.4)에 의존했다. 사용자 제안: "레드닷의 형태를 직사각형으로
+그리고 직사각형을 정사각형의 모음으로 바꾸면 첫번째 정사각형의 중심이 레드닷의 중심으로 보는건
+어때?" - 바운딩박스를 짧은 변(늘어지지 않는 방향의 폭, 실측으로 확인된 실제 LED 지름과 거의
+같음) 크기의 정사각형들로 나누고, 그중 평균 밝기가 가장 높은 정사각형("머리")을 고르는 순수
+기하학적 방법. 밝기 임계값 튜닝이 전혀 필요 없고, 회귀 테스트로도 동일하게 검증됨.
+`RedDotDetector._fit_head_square()`로 교체, `DetectionSettings.core_brightness_ratio` 설정은
+더 이상 쓰이지 않아 제거.
+
+재현: `PYTHONPATH=. python3 scripts/detect_on_video_image.py` 재실행 후
+`worst_elongation_1_frame_000022_liveview.png`(레드닷 글로우 중심에 십자선이 정확히 위치)와
+`frame_000022_shape_compare.jpg`(초록 정사각형이 늘어진 타원의 머리 부분만 정확히 감쌈)로
+확인 가능.
