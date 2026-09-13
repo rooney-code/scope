@@ -64,15 +64,21 @@ class RedDotDetector:
             if moments["m00"] == 0:
                 continue
 
-            center = self._intensity_weighted_centroid(contour, mask, value_channel, s.centroid_intensity_power)
-            if center is None:
-                center = (moments["m10"] / moments["m00"], moments["m01"] / moments["m00"])
-
             ellipse = None
             if len(contour) >= 5:
                 ellipse = cv2.fitEllipse(contour)
 
             core_circle = self._fit_head_square(contour, mask, value_channel)
+            if core_circle is not None:
+                # 정사각형 분할로 찾은 "머리"의 중심을 그대로 검출 중심으로 사용 - 코멧테일
+                # 꼬리를 포함해 쏠리는 문제가 없는 기하학적 방법이므로, 픽셀 단위 밝기
+                # 가중치(_intensity_weighted_centroid)보다 우선한다. 사용자 확인 사항
+                # (2026-09-13), docs/detection_notes.md 14차 참고.
+                center = core_circle[0]
+            else:
+                center = self._intensity_weighted_centroid(contour, mask, value_channel, s.centroid_intensity_power)
+                if center is None:
+                    center = (moments["m10"] / moments["m00"], moments["m01"] / moments["m00"])
 
             results.append(
                 DetectionResult(
@@ -147,8 +153,7 @@ class RedDotDetector:
         length = h if vertical else w
         segment_count = max(1, round(length / side))
 
-        best_center: tuple[float, float] | None = None
-        best_brightness = -1.0
+        segments: list[tuple[float, tuple[float, float]]] = []  # (avg_brightness, center)
         for i in range(segment_count):
             lo = int(round(i * length / segment_count))
             hi = int(round((i + 1) * length / segment_count))
@@ -165,12 +170,23 @@ class RedDotDetector:
             if count == 0:
                 continue
             avg_brightness = float(seg_value[seg_mask].astype(np.float64).sum()) / count
-            if avg_brightness > best_brightness:
-                best_brightness = avg_brightness
-                best_center = center
+            segments.append((avg_brightness, center))
 
-        if best_center is None:
+        if not segments:
             return None
+
+        # 밝기가 거의 동일한(대략 균일한 밝기의 정상적인 원형/타원형 - 코멧테일이 아닌 경우)
+        # 구간들 사이에서는 특정 구간을 임의로(예: 첫 구간) 고르지 않고, 동률인 구간들의
+        # 중심을 평균해 대칭적인 결과가 나오게 한다(구간 수가 짝수라 정중앙 구간이 없어도
+        # 대칭 위치를 유지). 코멧테일처럼 한 구간이 뚜렷이 밝을 때만 그 구간 하나만 남아
+        # 그대로 선택된다.
+        max_brightness = max(b for b, _ in segments)
+        tolerance = max_brightness * 0.02
+        candidates = [c for b, c in segments if b >= max_brightness - tolerance]
+        best_center = (
+            sum(c[0] for c in candidates) / len(candidates),
+            sum(c[1] for c in candidates) / len(candidates),
+        )
         return (best_center, side / 2.0)
 
     def detect_best(self, frame_bgr: np.ndarray) -> DetectionResult:

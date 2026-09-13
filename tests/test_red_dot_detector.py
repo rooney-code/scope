@@ -60,24 +60,36 @@ def _make_comet_tail_frame(
     return frame
 
 
-def test_comet_tail_shape_center_is_pulled_toward_bright_head_not_binary_centroid():
+def test_head_square_center_is_pulled_toward_bright_head_not_binary_centroid():
     """35MOA 부근에서 실측된 "코멧테일" 왜곡(고객 제공 영상으로 확인) - 이진 마스크의 단순
-    무게중심(모든 픽셀 동일 가중치)은 어두운 꼬리 쪽으로 쏠리므로, 밝기 가중 무게중심이 그
-    쏠림을 뚜렷이 줄여 참 중심(밝은 머리)에 더 가까워야 한다."""
+    무게중심(모든 픽셀 동일 가중치)은 어두운 꼬리 쪽으로 쏠린다. 정사각형 분할 방식
+    (_fit_head_square, 14차 수정 이후 center_px의 주된 계산 방식)이 그 쏠림을 뚜렷이 줄여
+    참 중심(밝은 머리)에 더 가까워야 한다."""
     true_center_x = 200
     frame = _make_comet_tail_frame(head_center=(true_center_x, 150), tail_dx=1)
 
-    naive = RedDotDetector(DetectionSettings(centroid_intensity_power=0.0))
-    weighted = RedDotDetector(DetectionSettings(centroid_intensity_power=2.0))
+    detector = RedDotDetector(DetectionSettings())
+    result = detector.detect_best(frame)
+    assert result.found
 
-    naive_result = naive.detect_best(frame)
-    weighted_result = weighted.detect_best(frame)
-    assert naive_result.found and weighted_result.found
+    # 참고용 - 단순 이진 마스크 무게중심(꼬리 포함, 쏠림 발생) 직접 계산
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    s = DetectionSettings()
+    mask1 = cv2.inRange(hsv, np.array(s.hsv_lower1), np.array(s.hsv_upper1))
+    mask2 = cv2.inRange(hsv, np.array(s.hsv_lower2), np.array(s.hsv_upper2))
+    mask = cv2.bitwise_or(mask1, mask2)
+    contour = sorted(
+        cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)[0],
+        key=cv2.contourArea,
+        reverse=True,
+    )[0]
+    moments = cv2.moments(contour)
+    naive_center_x = moments["m10"] / moments["m00"]
 
-    naive_bias = abs(naive_result.center_px[0] - true_center_x)
-    weighted_bias = abs(weighted_result.center_px[0] - true_center_x)
+    naive_bias = abs(naive_center_x - true_center_x)
+    detector_bias = abs(result.center_px[0] - true_center_x)
     assert naive_bias > 3.0  # 꼬리 쪽으로 유의미하게 쏠림(회귀 확인용)
-    assert weighted_bias < naive_bias * 0.7  # 가중치 적용으로 쏠림이 뚜렷이 줄어듦
+    assert detector_bias < naive_bias * 0.5  # 정사각형 분할 방식으로 쏠림이 뚜렷이 줄어듦
 
 
 def test_core_circle_is_round_even_when_ellipse_is_stretched_by_comet_tail():

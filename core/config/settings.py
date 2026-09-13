@@ -89,8 +89,16 @@ class DetectionSettings:
     # 원형 구간(대부분의 프레임)은 프레임별 측정치를 그대로 신뢰하고, elongation(늘어짐
     # 비율)이 임계값을 넘는 심한 코멧테일 구간에서만 이전 프레임들로 추정한 속도 기반
     # 예측 위치와 현재 측정치를 blend해 흔들림을 줄인다. docs/detection_notes.md 10차 참고.
+    #
+    # 기본값이 blend=0.0(사실상 비활성화)인 이유(2026-09-13 후속 확인, 14차 참고): 13차에서
+    # 예측 근거를 원시 측정치로 고정해 누적 드리프트는 해결했지만, 이후 center_px 자체가
+    # `_fit_head_square()`(정사각형 분할, 코멧테일에도 흔들림 없이 안정적)로 바뀌면서 원시
+    # 측정치 자체가 이미 충분히 정확해져 이 보정이 필요 없어짐 - 오히려 보정이 이미 정확한
+    # 값을 (직전 두 프레임의 속도 추정 오차만큼) 미세하게 틀어지게 만드는 경우가 실측으로
+    # 확인됨. 코드/메커니즘은 남겨두고(추후 다른 왜곡 패턴에서 필요해질 수 있음) 기본값만
+    # 끔 - 필요 시 설정으로 다시 켤 수 있음.
     elongation_correction_threshold: float = 1.5
-    elongation_correction_blend: float = 0.5
+    elongation_correction_blend: float = 0.0
 
 
 @dataclass

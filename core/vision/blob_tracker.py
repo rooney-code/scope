@@ -26,7 +26,7 @@ class BlobTracker:
         self,
         max_jump_px: float = 60.0,
         elongation_correction_threshold: float = 1.5,
-        elongation_correction_blend: float = 0.5,
+        elongation_correction_blend: float = 0.0,
     ) -> None:
         self.max_jump_px = max_jump_px
         self.elongation_correction_threshold = elongation_correction_threshold
