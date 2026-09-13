@@ -404,3 +404,20 @@ StartPointYMoa`, `CheckResults.RawMeasuredValue` 컬럼을 추가해 DB에도 �
 같이 켜고 끌 것으로 판단). 오차 정보 체크박스는 영상 위에 굽는 텍스트(cv2.putText)만
 껐다 켜고, 영상 하단의 별도 Qt 라벨(`_offset_label`)은 화면을 가리지 않으므로 체크박스와
 무관하게 항상 갱신된다.
+
+## 16차 수정 (2026-09-13, DB(결과 저장/조회) 실제 배선 - 클래스는 있었지만 연결 안 되어 있었음)
+
+`ResultsView`/`InspectionRepository`/`schema.sql`은 모두 구현·테스트되어 있었지만,
+`app/main.py`가 `InspectionViewModel`/`MainWindow`에 `repository`를 넘겨주지 않아 실제
+프로그램에서는 항상 `repository=None`으로 동작하고 있었음(사용자가 운용자 가이드를 보다가
+"결과 조회가 실제 있는 기능이 맞냐"고 재확인하며 발견). 즉 `settings.json`의 `database`를
+채워도 실제로는 DB 연결이 시도조차 되지 않았고, "시험 종료"를 눌러도 저장되지 않았으며
+"결과 조회" 탭도 화면에 나타나지 않았음.
+
+**해결**: `app/main.py`에 `_build_repository()` 추가 - `settings.database.server/database`가
+채워져 있으면 `core/data/db_config.connect()` + `InspectionRepository`로 연결을 시도하고,
+그 결과를 `InspectionViewModel`/`MainWindow`에 전달. `server`/`database`가 비어있거나 연결에
+실패하면(드라이버 미설치, 서버 접속 불가 등) 콘솔에 원인만 로그로 남기고 `repository=None`으로
+계속 진행(기존에 각 클래스가 이미 이 상황을 안전하게 처리하도록 짜여 있었음 - 배선만 빠져
+있었던 것). `--no-db` 옵션을 추가해 DB 설정이 있어도 강제로 건너뛸 수 있게 함(하드웨어 없는
+UI 데모 등).
