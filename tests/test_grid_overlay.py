@@ -21,13 +21,22 @@ def _profile() -> CalibrationProfile:
 
 
 def _tick_vertical_extent(frame: np.ndarray, x_px: int, oy_i: int) -> int:
-    """주어진 열(x_px)에서 원점 y(oy_i)로부터 가장 멀리 칠해진(빨간) 픽셀까지의 거리 -
-    그 열에 그려진 tick 눈금(+가로축선 두께)의 길이를 근사한다."""
+    """주어진 열(x_px)에서 oy_i를 포함하는 연속된(칠해진) 구간의 길이 - 그 열에 그려진
+    tick 눈금의 길이를 근사한다.
+
+    측정 열이 원점과 가까우면(px_per_moa가 작을 때) 다른(수직) 축의 더 긴 tick이 가로로
+    번져 같은 열에 멀리 떨어진 별개의 색칠 구간을 만들 수 있다 - 원점을 포함하는 연속
+    구간만 봐야 그 조각들이 결과에 섞이지 않는다."""
     col = frame[:, x_px, 2]  # BGR의 R 채널
-    colored_rows = np.where(col > 0)[0]
-    if colored_rows.size == 0:
-        return 0
-    return int(max(abs(int(colored_rows.min()) - oy_i), abs(int(colored_rows.max()) - oy_i)))
+    colored = col > 0
+    top = oy_i
+    while top - 1 >= 0 and colored[top - 1]:
+        top -= 1
+    bottom = oy_i
+    n = len(colored)
+    while bottom + 1 < n and colored[bottom + 1]:
+        bottom += 1
+    return max(oy_i - top, bottom - oy_i)
 
 
 def test_tick_length_tiers_1_5_10_moa():
@@ -82,6 +91,7 @@ def test_y_axis_label_sign_controls_left_right_placement():
     frame = np.zeros((600, 600, 3), dtype=np.uint8)
     profile = _profile()
     ox_i = int(round(_OX))
+    oy_i = int(round(_OY))
     length = 4
 
     out = draw_coordinate_axes(frame, profile, tick_step_moa=10.0, label_step_moa=10.0, max_moa_range=10)
@@ -96,7 +106,16 @@ def test_y_axis_label_sign_controls_left_right_placement():
 
     assert out[:, right_col_range, 2].any()  # +y 라벨(축 오른쪽)이 그려져 있어야 함
     assert out[:, left_col_range, 2].any()  # -y 라벨(축 왼쪽)이 그려져 있어야 함
+
+    # 두 열 범위 모두 원점 근처라 가로 축선 자체(oy_i, 두께만큼)가 지나가므로, 그 행은
+    # 라벨과 무관하게 항상 걸린다 - 라벨 행만 비교하려면 축선이 걸리는 행을 제외해야 한다.
+    axis_band = slice(max(0, oy_i - 3), min(600, oy_i + 4))
+    right_mask = out[:, right_col_range, 2].any(axis=1)
+    left_mask = out[:, left_col_range, 2].any(axis=1)
+    right_mask[axis_band] = False
+    left_mask[axis_band] = False
+
     # +y는 화면 y가 원점보다 위쪽(작은 행), -y는 아래쪽(큰 행)이므로 서로 다른 행 범위임을 확인
-    right_rows = np.where(out[:, right_col_range, 2].any(axis=1))[0]
-    left_rows = np.where(out[:, left_col_range, 2].any(axis=1))[0]
+    right_rows = np.where(right_mask)[0]
+    left_rows = np.where(left_mask)[0]
     assert right_rows.max() < left_rows.min()

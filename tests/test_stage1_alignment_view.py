@@ -15,7 +15,11 @@ def qapp():
 
 
 def _make_view() -> Stage1AlignmentView:
-    return Stage1AlignmentView(Stage1Settings(), on_ready_to_proceed=lambda: None)
+    # 최상위 위젯은 .show() 전까지 항상 isVisible()==False다(자식의 setVisible(True)
+    # 여부와 무관) - 경고 라벨 표시 여부를 isVisible()로 검증하려면 실제로 보여야 한다.
+    view = Stage1AlignmentView(Stage1Settings(), on_ready_to_proceed=lambda: None)
+    view.show()
+    return view
 
 
 def test_warning_shown_when_no_calibration_set():
