@@ -169,7 +169,10 @@ class IdsPeakCameraService(ICameraService):
 
     def _buffer_to_bgr(self, buffer, ipl) -> np.ndarray | None:
         try:
-            raw_image = ipl.Image_CreateFromSizeAndBuffer(
+            # PyPI로 배포되는 최신 ids_peak_ipl(pip install ids-peak-ipl)에서는 이미지 생성이
+            # 평평한 함수(Image_CreateFromSizeAndBuffer)가 아니라 Image 클래스의 메서드로
+            # 바뀌었다(docs/windows_setup_guide.md 5-4 참고, 실기 설치 중 확인된 사항).
+            raw_image = ipl.Image.CreateFromSizeAndBuffer(
                 buffer.PixelFormat(), buffer.BasePtr(), buffer.Size(), buffer.Width(), buffer.Height()
             )
             color_image = raw_image.ConvertTo(ipl.PixelFormatName_BGR8)

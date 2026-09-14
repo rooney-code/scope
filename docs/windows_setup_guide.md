@@ -46,13 +46,43 @@ VM 준비가 끝났으면(또는 이미 Windows PC가 있다면) 아래 1번부�
 
 ## 1. Python 설치
 
-1. https://www.python.org/downloads/ 에서 **Python 3.10 이상** 설치 프로그램을 받습니다
-   (3.11 또는 3.12 권장).
+1. Python 3.12는 정규 유지보수 지원이 종료되어 최신 3.12.x 버전은 Windows용 설치
+   프로그램(.exe)이 제공되지 않습니다(소스 코드만 배포) - 아래 중 하나를 받으세요:
+   - **Python 3.12.10**(Windows 설치파일이 제공되는 마지막 3.12 버전):
+     https://www.python.org/ftp/python/3.12.10/python-3.12.10-amd64.exe
+   - **Python 3.13.x**(현재 정식 지원 중인 최신 안정 버전, 장기적으로 권장):
+     https://www.python.org/downloads/ 에서 최신 3.13 버전 다운로드
 2. 설치 화면에서 **"Add python.exe to PATH"** 체크박스를 반드시 체크하세요.
 3. 설치 후 명령 프롬프트(cmd)나 PowerShell을 새로 열고 확인:
    ```
    python --version
    ```
+
+### 1-1. ⚠️ 아나콘다(conda)를 함께 쓰는 PC라면 반드시 읽어주세요
+
+conda가 설치되어 있으면 PowerShell을 열 때마다 `(base)`가 자동으로 활성화되고, conda
+자체의 hook이 매 명령마다 PATH 맨 앞에 자신의 경로를 다시 끼워 넣습니다. 이 때문에
+`.venv`를 활성화해 화면에 `(.venv)`가 떠 있어도, 실제로는 `python` 명령이 조용히 conda의
+Python으로 실행되는 경우가 있습니다. 이 상태로 `.venv`를 만들면 `.venv` 자체가 conda의
+Python을 기반으로 만들어져 버려서, 이후 패키지 설치/실행 중 원인 불명의 DLL 오류
+(`DLL 초기화 루틴을 실행할 수 없습니다` 등)가 발생할 수 있습니다.
+
+**권장 조치**:
+```
+conda config --set auto_activate_base false
+```
+이 프로젝트에서 conda를 쓸 계획이 없다면, 아예 제거하는 것도 좋은 방법입니다(설정 → 앱 →
+Anaconda3 제거). 제거 후에는 새 터미널에서 `where.exe python`으로 conda 경로가 더 안
+뜨는지 확인하세요.
+
+가상환경(3번 항목)을 만들기 전에는 항상 아래로 실제 어떤 Python이 쓰이는지 확인하는
+습관을 들이면 좋습니다:
+```
+where.exe python
+python -c "import sys; print(sys.executable)"
+```
+(PowerShell의 `where`는 `Where-Object`의 별칭이라 다르게 동작하므로, 반드시 `where.exe`로
+실행하세요.)
 
 ## 2. 프로젝트 코드 받기
 
@@ -103,16 +133,43 @@ pip install -r requirements.txt
 2. 카메라(USB3)를 PC에 연결하고, IDS에서 제공하는 **IDS peak Cockpit** 프로그램으로 카메라가
    정상적으로 인식되고 영상이 나오는지 먼저 확인하세요 (이 프로그램과 별개로, 하드웨어/드라이버
    문제인지 먼저 가려내기 위함입니다).
-3. IDS peak SDK의 Python 바인딩(`ids_peak`, `ids_peak_ipl`)을 설치합니다. 설치 방법은 IDS
-   Software Suite에 포함된 예제/문서의 안내를 따르세요 (보통 설치 폴더 안의 wheel 파일을
-   `pip install`하는 방식입니다). 예:
-   ```
-   pip install "C:\Program Files\IDS\ids_peak\...\ids_peak-X.Y.Z-cp311-cp311-win_amd64.whl"
-   ```
-   (정확한 경로/파일명은 설치된 IDS Software Suite 버전에 따라 다릅니다.)
-4. `core/camera/ids_peak_camera_service.py` 안의 노드명(`ExposureTime`, `Gain` 등)은 계획 단계의
-   추정치이므로, 실제 카메라에서 IDS peak Cockpit이나 코드로 노드맵을 확인해 다를 경우 이름을
-   맞춰줘야 할 수 있습니다 (콘솔에 "설정 실패(노드명 확인 필요)" 로그가 뜨면 해당 항목입니다).
+### 5-3. Python 바인딩 설치는 wheel 대신 PyPI로 (권장)
+
+과거에는 IDS Software Suite 설치 폴더 안의 wheel 파일을 직접 `pip install`해야 했지만,
+IDS가 공식적으로 PyPI에 배포하는 패키지를 쓰는 것이 훨씬 간단합니다 - 경로를 찾아다닐
+필요 없이 일반 패키지처럼 설치됩니다:
+```
+pip install ids-peak
+pip install ids-peak-ipl
+```
+
+설치 확인:
+```
+python -c "import ids_peak_ipl; import ids_peak; print('OK')"
+```
+버전 확인은 `pip show ids-peak-ipl`로 할 수 있습니다.
+
+### 5-4. API 이름 변경 주의 (ids_peak_ipl)
+
+PyPI로 설치한 최신 버전의 `ids_peak_ipl`에서는 이미지 생성 함수가 평평한 함수 이름이
+아니라 **클래스 메서드 방식**으로 바뀌었습니다:
+```python
+# 예전 방식 (동작 안 함) - AttributeError 발생
+ids_peak_ipl.Image_CreateFromSizeAndBuffer(pixel_format, base_ptr, size, width, height)
+
+# 현재 방식
+ids_peak_ipl.Image.CreateFromSizeAndBuffer(pixel_format, base_ptr, size, width, height)
+```
+이 저장소의 `core/camera/ids_peak_camera_service.py`는 이미 현재 방식(`ipl.Image.
+CreateFromSizeAndBuffer(...)`)으로 되어 있습니다. 만약 SDK를 더 옛 버전으로 설치했거나
+다른 예제 코드를 참고해 옛 방식(`Image_CreateFromSizeAndBuffer`)의 호출부를 추가했다면
+`AttributeError`가 나므로, 클래스 메서드 방식으로 고쳐야 합니다.
+
+### 5-5. 노드명(GenApi) 확인
+
+`core/camera/ids_peak_camera_service.py` 안의 노드명(`ExposureTime`, `Gain` 등)은 계획 단계의
+추정치이므로, 실제 카메라에서 IDS peak Cockpit이나 코드로 노드맵을 확인해 다를 경우 이름을
+맞춰줘야 할 수 있습니다 (콘솔에 "설정 실패(노드명 확인 필요)" 로그가 뜨면 해당 항목입니다).
 
 ## 6. MSSQL 연결 준비 (결과 저장 사용 시)
 
@@ -198,6 +255,18 @@ dist\ScopeInspector\ScopeInspector.exe --mock
 같은 아키텍처의 다른 Windows PC)에서 해야 합니다 - 이 PC에서 돌던 환경을 그대로 굳히는
 작업이라 다른 OS/아키텍처에서 빌드한 결과물은 대상 PC에서 그대로 동작하지 않습니다.
 
+## 10. VS Code + Claude Code 설치 (선택)
+
+VM 안내(0번 항목)에서 소개한 방식을 로컬 PC에도 그대로 적용할 수 있습니다 - 코드를 직접
+보면서 Claude와 대화하며 수정/테스트하고 싶다면:
+
+1. https://code.visualstudio.com/ 에서 VS Code를 설치합니다.
+2. VS Code에서 **File > Open Folder**로 이 프로젝트 폴더(`scope`)를 엽니다.
+3. 좌측 확장(Extensions) 탭에서 **"Claude Code"**를 검색해 설치합니다.
+4. 설치된 Claude 아이콘을 클릭하고, 열리는 브라우저 창에서 계정으로 로그인합니다.
+5. 이후 코드 관련 질문이나 수정 요청을 채팅창에서 바로 진행할 수 있습니다(터미널 명령
+   실행, 파일 수정, 테스트 실행 등을 직접 대신 해줄 수 있습니다).
+
 ## 자주 발생하는 문제
 
 | 증상 | 원인/해결 |
@@ -207,3 +276,6 @@ dist\ScopeInspector\ScopeInspector.exe --mock
 | `pyodbc.Error`로 DB 연결 실패 | ODBC Driver 미설치, 서버 주소/계정 오류, 방화벽/VPN 문제 확인 |
 | 카메라 화면이 안 나옴 | IDS peak Cockpit에서 먼저 카메라가 잡히는지 확인 (드라이버/USB 문제 여부 판단) |
 | 화면이 너무 작게/크게 나옴 | 아직 세부 UI 레이아웃은 다듬는 중 - 창 크기를 직접 조절하거나 알려주시면 개선하겠습니다 |
+| `ImportError: DLL load failed while importing _ids_peak_ipl_python_interface: DLL 초기화 루틴을 실행할 수 없습니다` | 대부분 conda와의 PATH 충돌이 원인 - `.venv`가 실제로는 conda의 Python을 참조하고 있을 수 있음(1-1번 항목 참고). `where.exe python`으로 실제 경로 확인 후, conda 비활성화(`conda deactivate`) 또는 완전 제거 후 `.venv`를 처음부터 다시 생성 |
+| `module 'ids_peak_ipl.ids_peak_ipl' has no attribute 'Image_CreateFromSizeAndBuffer'` | 최신 `ids_peak_ipl` 버전에서는 `Image_CreateFromSizeAndBuffer` → `Image.CreateFromSizeAndBuffer`로 API 이름이 변경됨(5-4번 항목 참고) - 코드에서 해당 호출부를 클래스 메서드 방식으로 수정 |
+| `where python`을 쳤는데 아무것도 안 뜸 | PowerShell에서는 `where`가 `Where-Object`의 별칭이라 다르게 동작함 - `where.exe python`으로 실행할 것 |
