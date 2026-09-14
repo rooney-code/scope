@@ -33,6 +33,14 @@ class CameraSettings:
     brightness_target: float = 150
     brightness_tolerance: float = 3
     auto_white_balance: str = "off"
+    # 이 카메라(U3-388xLE-C)는 BalanceRatio 노드 자체가 없다(실기 확인 사항) - 카메라 측에
+    # 화이트밸런스 게인을 걸 방법이 없으므로, IdsPeakCameraService가 ids_peak_ipl.Gain으로
+    # 캡처된 각 프레임에 직접 적용한다(호스트 측/소프트웨어 구현, docs/windows_setup_guide.md
+    # 참고). 더 이상 TBD 아님 - 실측으로 R/G/B 채널별 독립 적용 확인됨.
+    # 유효 범위는 1.0~8.0(실측 확인) - 1.0 미만으로는 감쇠 불가하다. 특정 채널를 "덜 붉게/
+    # 덜 파랗게" 만들고 싶으면 그 채널을 낮추는 게 아니라 나머지 채널들을 올려 상대적으로
+    # 맞추는 방식으로 값을 잡아야 한다(범위를 벗어난 값은 IdsPeakCameraService가 자동으로
+    # 1.0~8.0 범위로 clamp함).
     wb_gain_r: float = 1.00
     wb_gain_g: float = 1.00
     wb_gain_b: float = 1.00

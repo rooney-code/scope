@@ -421,3 +421,42 @@ StartPointYMoa`, `CheckResults.RawMeasuredValue` 컬럼을 추가해 DB에도 �
 계속 진행(기존에 각 클래스가 이미 이 상황을 안전하게 처리하도록 짜여 있었음 - 배선만 빠져
 있었던 것). `--no-db` 옵션을 추가해 DB 설정이 있어도 강제로 건너뛸 수 있게 함(하드웨어 없는
 UI 데모 등).
+
+## 17차 수정 (2026-09-14, 카메라 하드웨어 제약 - 화이트밸런스 R/G/B 게인 호스트 측 구현)
+
+실기 노드맵 확인 결과, 이 카메라(U3-388xLE-C)에는 `ExposureAuto`/`GainAuto`/
+`BalanceWhiteAuto`(카메라 자체 오토 기능)와 `BalanceRatio`(화이트밸런스 R/G/B 게인) 노드가
+애초에 없음을 확인(하드웨어 사양 - 코드로 고칠 수 없는 제약). 앞의 세 오토 기능은 항상
+꺼둘 계획이었으므로 문제없지만, 화이트밸런스 게인은 `settings.json`의 `wb_gain_r/g/b`로
+조정 가능해야 하므로 대안이 필요했음.
+
+`ids-imaging/ids-peak-examples`(IDS 공식 예제 저장소)의 `python/gui_kivy_pipeline` 예제를
+참고해 확인: IDS SDK가 제공하는 `ids_peak_ipl.Gain` 클래스가 카메라 하드웨어와 완전히
+독립적으로(호스트/소프트웨어 측에서) 캡처된 이미지에 R/G/B/마스터 게인을 직접 곱해주는
+기능을 제공함(`ids-peak-afl`의 자동 화이트밸런스 파이프라인도 내부적으로 이 클래스를 최종
+적용 단계로 사용). 실제 `ids_peak_ipl` 네이티브 라이브러리(PyPI wheel)를 이 환경에 설치해
+합성 Bayer 패턴 이미지로 직접 검증: R 게인만 2배로 주면 R 채널 픽셀만 정확히 2배가 되고
+G/B는 그대로 유지됨 확인. `IsPixelFormatSupported()`로도 Mono8/BayerRG8은 지원, 이미
+BGR8로 변환된 이미지는 미지원(컬러 변환 전 단계에서 적용해야 함)임을 확인.
+
+`core/camera/ids_peak_camera_service.py`에 반영: `apply_settings()`가 기존 `BalanceRatio`
+노드 시도(이 카메라에서는 항상 실패 로그만 남김) 뒤에 `_update_white_balance_gain()`으로
+`ids_peak_ipl.Gain` 객체를 만들어 보관하고, `_buffer_to_bgr()`가 컬러 변환(BGR8) 전 원본
+Bayer/Mono 단계에서 `ProcessInPlace()`로 적용. `DetectionSettings`가 아니라
+`CameraSettings.wb_gain_r/g/b`(기존 설정 항목)를 그대로 재사용 - 더 이상 TBD 아님.
+
+**추가 실측 발견**: `ids_peak_ipl.Gain`의 채널별 유효 범위는 **1.0~8.0**(`RedGainMin()`
+등으로 실측 확인) - 1.0 미만으로는 감쇠가 안 된다. 예를 들어 "덜 파랗게" 만들고 싶어
+`wb_gain_b=0.8`처럼 1.0 미만 값을 주면 SDK가 `InvalidArgument` 예외를 던진다. 처음엔 값
+하나가 범위를 벗어나면 예외가 나서 R/G/B 전체(`self._wb_gain`)가 `None`이 되어 화이트밸런스
+기능 자체가 통째로 꺼지는 문제가 있었음 - `_update_white_balance_gain()`이 각 채널을
+`RedGainMin()~RedGainMax()`(등) 범위로 clamp하도록 수정해, 한 채널이 범위를 벗어나도
+나머지 채널은 정상 적용되고 그 채널만 경계값으로 조정되게 함. 운영 시에는 특정 채널을
+낮추는 게 아니라 나머지 채널들을 올려 상대적으로 맞추는 방식으로 값을 잡아야 한다
+(`core/config/settings.py`의 `wb_gain_r/g/b` 주석 참고).
+
+**검증 방법(실제 `ids_peak_ipl` 네이티브 라이브러리 기준)**: 위 발견 모두 PyPI wheel로 받은
+실제 컴파일된 `ids_peak_ipl`(카메라 하드웨어 없이도 이미지 처리 라이브러리 자체는 동작함)을
+이 환경에 설치해 직접 실행/검증한 결과다 - 추측이 아님. `tests/test_ids_peak_camera_service.py`
+가 `pytest.importorskip("ids_peak_ipl.ids_peak_ipl")`로 이 라이브러리가 설치된 환경에서만
+같은 검증을 자동 회귀 테스트로 수행한다(SDK 미설치 환경에서는 조용히 skip).

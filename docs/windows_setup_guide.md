@@ -171,6 +171,44 @@ CreateFromSizeAndBuffer(...)`)으로 되어 있습니다. 만약 SDK를 더 옛 
 추정치이므로, 실제 카메라에서 IDS peak Cockpit이나 코드로 노드맵을 확인해 다를 경우 이름을
 맞춰줘야 할 수 있습니다 (콘솔에 "설정 실패(노드명 확인 필요)" 로그가 뜨면 해당 항목입니다).
 
+### 5-6. 이 카메라(U3-388xLE-C)의 실제 제약사항 (하드웨어 자체의 한계, 코드로 못 고침)
+
+실기로 노드맵을 확인한 결과, 아래 기능은 이 카메라 모델에 애초에 없는 기능입니다 - 코드
+문제가 아니라 하드웨어 사양이므로 콘솔에 "설정 실패(노드명 확인 필요)" 로그가 남는 것이
+정상입니다:
+
+- `ExposureAuto` / `GainAuto` / `BalanceWhiteAuto`: 카메라 자체 오토 기능 없음 - 항상 조용히
+  건너뜀 (정상 동작이며, 애초에 `settings.json`에서 이 세 항목은 `"off"` 고정 사용을 권장).
+- 화이트밸런스 R/G/B 게인(`BalanceRatio` 노드): 카메라에 이 노드가 없음.
+
+**화이트밸런스는 호스트 측(소프트웨어)에서 구현되어 있습니다** - `BalanceRatio` 노드가
+없다는 것을 확인한 뒤, `ids_peak_ipl.Gain` 클래스(IDS SDK가 공식 제공하는 이미지 처리
+라이브러리의 클래스, 카메라 하드웨어와 무관하게 동작)로 캡처된 각 프레임에 직접 R/G/B
+게인을 곱하는 방식으로 `core/camera/ids_peak_camera_service.py`(`apply_settings()`,
+`_buffer_to_bgr()`)에 이미 구현되어 있습니다:
+```python
+gain = ids_peak_ipl.Gain()
+gain.SetRedGainValue(settings.wb_gain_r)
+gain.SetGreenGainValue(settings.wb_gain_g)
+gain.SetBlueGainValue(settings.wb_gain_b)
+gain.ProcessInPlace(raw_image)  # 컬러 변환(BGR8) 전, Bayer/Mono 원본 단계에서 적용
+```
+(실제 `ids_peak_ipl` 네이티브 라이브러리로 합성 Bayer 패턴 이미지를 만들어 R 게인만 2배로
+줬을 때 R 채널 픽셀만 정확히 2배가 되고 G/B는 그대로인 것을 직접 확인함 - 참고 구현체:
+https://github.com/ids-imaging/ids-peak-examples 의 `python/gui_kivy_pipeline`이 같은
+`ids_peak_ipl.Gain` 클래스를 자동 화이트밸런스 파이프라인의 최종 적용 단계로 사용합니다.
+IDS가 별도 배포하는 `ids-peak-afl`(Auto-Feature Library) 패키지는 이 게인 값을 자동으로
+계산해주는 오토 화이트밸런스/오토 밝기 기능을 제공하지만, 이 프로젝트는 수동으로 지정한
+`wb_gain_r/g/b` 값만 쓰므로 `ids-peak-afl` 설치는 필요 없습니다.)
+
+`settings.json`에서 `camera.wb_gain_r/g/b`를 조정하면(예: 1.0 = 변화 없음, 1.2 = 20% 증가)
+다음 프레임부터 바로 반영됩니다 - 카메라 재시작이나 재연결이 필요 없습니다.
+
+⚠️ **유효 범위는 1.0~8.0입니다(1.0 미만 불가)** - `ids_peak_ipl.Gain`은 게인을 곱하기만
+하고 나눌 수는 없어서, 특정 채널을 "덜 붉게/덜 파랗게" 만들고 싶다면 그 채널 값을 낮추는
+게 아니라 **나머지 채널들을 올려서** 상대적으로 맞춰야 합니다. 범위를 벗어난 값을 넣으면
+`IdsPeakCameraService`가 자동으로 1.0~8.0 범위로 조정(clamp)하고 콘솔에 로그를 남깁니다.
+
 ## 6. MSSQL 연결 준비 (결과 저장 사용 시)
 
 1. Microsoft 공식 페이지에서 **ODBC Driver 18 for SQL Server**를 설치합니다.
