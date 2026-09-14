@@ -1,14 +1,17 @@
 """앱 셸: 좌측에 항상 떠 있는 공용 영상(LiveFeedView) + 우측 탭(시험 진행/캘리브레이션/
 카메라 설정/결과 조회).
 
-영상이 원본 3088x2076로 정사각에 가까워 좌측 영상 영역을 최대한 키우고, 카메라 설정/
-캘리브레이션은 프로그램 구동 시 한 번 맞춰두고 시험 중에는 거의 건드릴 일이 없어 가장 자주
-쓰는 "시험 진행"을 기본 탭으로 둔다. 캘리브레이션 탭이 활성화되면 좌측 영상이 캘리브레이션
-모드(크롭 없이 원본 전체 + 클릭으로 tick 스냅)로 전환된다.
+좌측 영상 영역을 최대한 키우고(카메라 원본은 정사각이 아니지만, 원점이 캘리브레이션된
+뒤에는 원점 기준 크롭 결과가 거의 정사각이 되도록 설계됨 - LiveFeedView._relayout_square_image
+참고), 카메라 설정/캘리브레이션은 프로그램 구동 시 한 번 맞춰두고 시험 중에는 거의 건드릴
+일이 없어 가장 자주 쓰는 "시험 진행"을 기본 탭으로 둔다. 캘리브레이션 탭이 활성화되면
+좌측 영상이 캘리브레이션 모드로 전환되는데, "시험 진행"과 마찬가지로 원점이 있으면 그
+주변을 확대해서 보여준다(원점 지정 대기 중이거나 원점이 아예 없을 때만 원본 전체를
+보여줌 - LiveFeedView._is_cropped_view 참고, 2026-09-14).
 """
 from __future__ import annotations
 
-from PySide6.QtWidgets import QHBoxLayout, QLabel, QLineEdit, QMainWindow, QTabWidget, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QLineEdit, QMainWindow, QTabWidget, QVBoxLayout, QWidget
 
 from app.viewmodels.inspection_viewmodel import InspectionViewModel
 from app.views.calibration_view import CalibrationView
@@ -28,6 +31,10 @@ class MainWindow(QMainWindow):
         self.live_feed_view = LiveFeedView()
         self.live_feed_view.set_calibration(self.vm.calibration)
         self.calibration_view = CalibrationView(self.vm.calibration, camera_id)
+        # 이 카메라(camera_id)로 저장해둔 캘리브레이션이 있으면 조용히 불러온다 - 매번
+        # "캘리브레이션" 탭에서 "불러오기"를 눌러야 했던 불편함에 대한 개선(사용자 요청,
+        # 2026-09-14). 없으면 load_saved()가 기본 안내 메시지를 그대로 둔다.
+        self.calibration_view.load_saved()
         self.camera_settings_view = CameraSettingsView(self.vm.camera, self.vm.settings.camera)
         self.stage1_view = Stage1AlignmentView(self.vm.settings.stage1, on_ready_to_proceed=self._on_stage1_ready)
         self.stage1_view.set_calibration(self.vm.calibration)
@@ -42,8 +49,17 @@ class MainWindow(QMainWindow):
         id_row.addWidget(QLabel("부품 ID:"))
         id_row.addWidget(self.scope_id_input)
 
+        # 확대/오버레이 컨트롤(원래 영상 아래에 있었음)을 시험 진행 탭 맨 위로 옮겨 영상이
+        # 세로로 더 커질 수 있게 한다(사용자 피드백, 2026-09-14) - 구분선으로 컨트롤
+        # 영역과 시험 내용을 구분.
+        separator = QFrame()
+        separator.setFrameShape(QFrame.HLine)
+        separator.setFrameShadow(QFrame.Sunken)
+
         test_tab = QWidget()
         test_layout = QVBoxLayout(test_tab)
+        test_layout.addWidget(self.live_feed_view.controls_widget)
+        test_layout.addWidget(separator)
         test_layout.addLayout(id_row)
         test_layout.addWidget(self.stage1_view)
         test_layout.addWidget(self.stage2_view)
@@ -76,6 +92,7 @@ class MainWindow(QMainWindow):
         self.vm.detection_ready.connect(self.live_feed_view.on_detection)
         self.vm.detection_ready.connect(self.stage1_view.on_detection)
         self.live_feed_view.frame_clicked_px.connect(self.calibration_view.on_frame_clicked)
+        self.calibration_view.origin_picking_changed.connect(self.live_feed_view.set_calibration_origin_picking)
 
     def _on_scope_id_changed(self, text: str) -> None:
         self.vm.set_scope_id(text)

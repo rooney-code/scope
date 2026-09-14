@@ -165,6 +165,11 @@ CreateFromSizeAndBuffer(...)`)으로 되어 있습니다. 만약 SDK를 더 옛 
 다른 예제 코드를 참고해 옛 방식(`Image_CreateFromSizeAndBuffer`)의 호출부를 추가했다면
 `AttributeError`가 나므로, 클래스 메서드 방식으로 고쳐야 합니다.
 
+같은 이유로 `Image.Data()`도 최신 버전(1.17.x 기준)에는 없습니다. 픽셀 버퍼를 numpy
+배열로 바로 받으려면 `get_numpy_3D()`(BGR8처럼 채널 수>1, 8bit 포맷 기준. 단일 채널이면
+`get_numpy_2D()`, 픽셀 포맷에 안 맞는 형식이라도 알아서 골라주는 `get_numpy()` 편의 함수도
+있음)를 사용해야 합니다. 이 저장소는 이미 `get_numpy_3D()`로 되어 있습니다.
+
 ### 5-5. 노드명(GenApi) 확인
 
 `core/camera/ids_peak_camera_service.py` 안의 노드명(`ExposureTime`, `Gain` 등)은 계획 단계의
@@ -316,4 +321,5 @@ VM 안내(0번 항목)에서 소개한 방식을 로컬 PC에도 그대로 적�
 | 화면이 너무 작게/크게 나옴 | 아직 세부 UI 레이아웃은 다듬는 중 - 창 크기를 직접 조절하거나 알려주시면 개선하겠습니다 |
 | `ImportError: DLL load failed while importing _ids_peak_ipl_python_interface: DLL 초기화 루틴을 실행할 수 없습니다` | 대부분 conda와의 PATH 충돌이 원인 - `.venv`가 실제로는 conda의 Python을 참조하고 있을 수 있음(1-1번 항목 참고). `where.exe python`으로 실제 경로 확인 후, conda 비활성화(`conda deactivate`) 또는 완전 제거 후 `.venv`를 처음부터 다시 생성 |
 | `module 'ids_peak_ipl.ids_peak_ipl' has no attribute 'Image_CreateFromSizeAndBuffer'` | 최신 `ids_peak_ipl` 버전에서는 `Image_CreateFromSizeAndBuffer` → `Image.CreateFromSizeAndBuffer`로 API 이름이 변경됨(5-4번 항목 참고) - 코드에서 해당 호출부를 클래스 메서드 방식으로 수정 |
+| `[camera] 프레임 변환 실패: 'Image' object has no attribute 'Data'` | 최신 `ids_peak_ipl`에는 `Image.Data()`가 없음(5-4번 항목 참고) - `get_numpy_3D()`(또는 상황에 맞는 `get_numpy()`/`get_numpy_2D()`)로 numpy 배열을 직접 받아야 함 |
 | `where python`을 쳤는데 아무것도 안 뜸 | PowerShell에서는 `where`가 `Where-Object`의 별칭이라 다르게 동작함 - `where.exe python`으로 실행할 것 |

@@ -1,8 +1,13 @@
 """픽셀 <-> 각도(MOA) 변환 캘리브레이션.
 
-GridAutoDetector의 자동 검출 결과를 초기값으로 받아, 작업자의 클릭 스냅(특정 tick을 클릭해
-"이 위치가 몇 mrad/MOA인지" 지정)과 화살표 미세조정을 반영해 최종 원점과 px-per-MOA(X/Y 분리)
-스케일을 확정한다. 카메라 식별자별로 JSON 프로파일을 저장/재사용한다(다중 장비 대응).
+GridAutoDetector의 자동 검출(또는 작업자가 영상을 직접 클릭한 수동 검출)로 초기 원점을 얻고,
+화살표 미세조정(nudge_origin/nudge_scale)으로 원점과 px-per-MOA(X/Y 분리) 스케일을 화면을
+보면서 확정한다. 카메라 식별자별로 JSON 프로파일을 저장/재사용한다(다중 장비 대응).
+
+과거에는 tick을 클릭하고 값을 입력하는 snap_tick()이 UI에 노출되어 스케일을 정하는 주된
+수단이었으나, 그 폼의 값/축 입력이 헷갈린다는 피드백으로 UI에서 없앴다(2026-09-14) - 이제는
+nudge_scale()이 스케일을 확정하는 유일한 UI 경로다. snap_tick()/refine_scale()은 API로는
+남아있고 테스트에서 계속 쓰이지만, 화면 버튼으로는 더 이상 호출되지 않는다.
 
 좌표계: 화면 픽셀은 y가 아래로 증가하지만, 검사 도메인에서는 "위(up)"가 +Y 이므로
 to_moa()에서 y축 부호를 반전한다.
@@ -23,6 +28,13 @@ import numpy as np
 
 from core.calibration.grid_auto_detector import GridAutoDetector, GridDetectionResult
 
+# 원점만 잡고 스케일을 아직 모를 때 쓰는 시작 추정치 - 실제 값은 렌즈/설치 상태에 따라 보통
+# 6~20 px/MOA 범위이므로, 그 중간값 근처를 잡아두면 nudge_scale()로 다듬을 때 몇 번만
+# 눌러도 실제값에 근접한다(클릭 스냅을 없애면서 nudge_scale이 유일한 스케일 확정 수단이
+# 됐으므로, 1.0 같은 극단값에서 시작하면 조정에 수백 번 클릭이 필요해 비현실적이었음,
+# 2026-09-14).
+_DEFAULT_PX_PER_MOA_GUESS = 10.0
+
 
 @dataclass
 class CalibrationProfile:
@@ -31,13 +43,27 @@ class CalibrationProfile:
     origin_px_y: float
     px_per_moa_x: float
     px_per_moa_y: float
+    # 자동/수동 검출 직후에는 원점만 알고 px_per_moa는 대략적인 시작 추정치
+    # (_DEFAULT_PX_PER_MOA_GUESS)다 - 이 상태로 크롭/MOA 계산을 하면 극단적으로 확대되거나
+    # 터무니없는 오차 숫자가 나온다(실측으로 확인된 문제, 2026-09-14). nudge_scale()(또는
+    # snap_tick/refine_scale)로 해당 축의 스케일이 실제 확정된 뒤에만 그 축의 플래그가
+    # True - x/y를 따로 두는 이유는 이 확정 수단들이 한 번에 한 축만 다루기 때문(한쪽만
+    # 조정해놓고 다른 쪽은 그대로 추정치인 상태를 구분해야 함).
+    scale_confirmed_x: bool = False
+    scale_confirmed_y: bool = False
 
     def to_dict(self) -> dict:
         return asdict(self)
 
     @staticmethod
     def from_dict(d: dict) -> "CalibrationProfile":
-        return CalibrationProfile(**d)
+        # 과거(scale_confirmed_x/y 필드 도입 전)에 저장된 프로파일 파일과의 호환을 위해
+        # 필드가 없으면 dataclass 기본값(False)으로 채운다 - 모르는 키는 무시.
+        known_fields = {
+            "camera_id", "origin_px_x", "origin_px_y", "px_per_moa_x", "px_per_moa_y",
+            "scale_confirmed_x", "scale_confirmed_y",
+        }
+        return CalibrationProfile(**{k: v for k, v in d.items() if k in known_fields})
 
 
 class PixelAngleCalibration:
@@ -53,10 +79,43 @@ class PixelAngleCalibration:
         if not grid_result.found or grid_result.origin_px is None:
             raise ValueError("자동 검출 결과가 유효하지 않습니다 (found=False 또는 origin 없음).")
         ox, oy = grid_result.origin_px
-        # px-per-moa는 아직 알 수 없으므로 임시값(추후 snap_tick으로 확정 필요)
+        self._seed_origin(camera_id, ox, oy)
+
+    # ---- 초기 추정(작업자가 영상에서 직접 클릭한 위치로) ----
+    def seed_from_manual_origin(self, camera_id: str, origin_px: tuple[float, float]) -> None:
+        """자동 검출이 실패하거나(어두운 화면 등) 신뢰할 수 없을 때, 작업자가 캘리브레이션
+        탭 영상에서 직접 클릭한 위치를 원점의 시작값으로 쓴다 - seed_from_auto_detection과
+        동일하게 스케일은 아직 임시값이며, 원점도 화살표 미세조정으로 다듬는 것을 전제로 한다
+        (사용자 요청, 2026-09-14: 클릭으로 대략적인 원점을 잡고 미세조정하는 워크플로)."""
+        ox, oy = origin_px
+        self._seed_origin(camera_id, ox, oy)
+
+    def _seed_origin(self, camera_id: str, ox: float, oy: float) -> None:
+        # px-per-moa는 아직 정확히 모르므로 대략적인 시작 추정치(_DEFAULT_PX_PER_MOA_GUESS)로
+        # 채운다 - nudge_scale()로 확정 필요. scale_confirmed_x/y가 False라 is_ready가
+        # False를 반환하고, 영상 크롭/오차 계산에 이 추정치가 쓰이지 않는다(is_ready 참고).
         self.profile = CalibrationProfile(
-            camera_id=camera_id, origin_px_x=ox, origin_px_y=oy, px_per_moa_x=1.0, px_per_moa_y=1.0
+            camera_id=camera_id,
+            origin_px_x=ox,
+            origin_px_y=oy,
+            px_per_moa_x=_DEFAULT_PX_PER_MOA_GUESS,
+            px_per_moa_y=_DEFAULT_PX_PER_MOA_GUESS,
+            scale_confirmed_x=False,
+            scale_confirmed_y=False,
         )
+
+    @property
+    def is_ready(self) -> bool:
+        """원점 + x/y 스케일이 모두 확정되어 크롭/MOA 계산에 안전하게 쓸 수 있는 상태인지."""
+        return self.profile is not None and self.profile.scale_confirmed_x and self.profile.scale_confirmed_y
+
+    def clear(self) -> None:
+        """원점을 완전히 지운다 - 잘못 잡은 원점을 화살표로 되돌리기엔 너무 멀리 벗어났을 때,
+        처음부터 다시 자동/수동 검출을 하기 위한 초기화 용도(사용자 요청, 2026-09-14).
+        캘리브레이션 탭은 profile이 None이면 크롭하지 않고 원본 전체를 보여주므로
+        (LiveFeedView._is_cropped_view), 이 호출만으로 화면도 자연스럽게 전체 보기로
+        돌아간다."""
+        self.profile = None
 
     # ---- 수동 보정: 클릭 스냅 ----
     def snap_tick(self, tick_px: float, known_value: float, unit: str, axis: str) -> None:
@@ -77,8 +136,10 @@ class PixelAngleCalibration:
 
         if axis == "x":
             self.profile.px_per_moa_x = px_per_moa
+            self.profile.scale_confirmed_x = True
         else:
             self.profile.px_per_moa_y = px_per_moa
+            self.profile.scale_confirmed_y = True
 
     # ---- 정밀 보정: 보조눈금 다수를 이용한 스케일 재측정 ----
     def refine_scale(
@@ -182,8 +243,10 @@ class PixelAngleCalibration:
         px_per_moa = slope / tick_unit_moa
         if axis == "x":
             self.profile.px_per_moa_x = px_per_moa
+            self.profile.scale_confirmed_x = True
         else:
             self.profile.px_per_moa_y = px_per_moa
+            self.profile.scale_confirmed_y = True
         return True
 
     # ---- 수동 보정: 화살표 미세조정 (기본 0.5px 단위) ----
@@ -193,15 +256,20 @@ class PixelAngleCalibration:
         self.profile.origin_px_x += dx_px
         self.profile.origin_px_y += dy_px
 
-    # ---- 수동 보정: 눈금 간격(px-per-MOA) 미세조정 (기본 0.01 단위) ----
+    # ---- 수동 보정: 눈금 간격(px-per-MOA) 미세조정 ----
     def nudge_scale(self, delta_x: float = 0.0, delta_y: float = 0.0) -> None:
-        """작업자가 화면에서 먼 지점(예: 35MOA 근처)의 실측 눈금과 비교해가며 px_per_moa를
-        직접 미세조정할 때 사용 - refine_scale()의 자동 추정이 신뢰하기 어려운 상황(예: 조명이
-        비대칭이라 한쪽 tick이 잘 안 보이는 경우)에 사람이 눈으로 보면서 최종 확정하는 용도."""
+        """작업자가 화면에서 빨간 좌표축 눈금이 실제 그리드와 맞는지 보면서 px_per_moa를
+        직접 조정할 때 사용. 클릭 스냅을 없애면서(2026-09-14, 사용자 요청) 이 메서드가 스케일을
+        확정하는 유일한 수단이 됐으므로, delta가 0이 아닌 축은 그 즉시 scale_confirmed로
+        표시한다(자동 검출 직후의 임시 추정치를 사용자가 실제로 들여다보고 조정했다는 뜻)."""
         if self.profile is None:
             raise RuntimeError("먼저 seed_from_auto_detection()으로 초기값을 설정하세요.")
-        self.profile.px_per_moa_x += delta_x
-        self.profile.px_per_moa_y += delta_y
+        if delta_x != 0:
+            self.profile.px_per_moa_x += delta_x
+            self.profile.scale_confirmed_x = True
+        if delta_y != 0:
+            self.profile.px_per_moa_y += delta_y
+            self.profile.scale_confirmed_y = True
 
     # ---- 변환 ----
     def to_moa(self, px_point: tuple[float, float]) -> tuple[float, float]:

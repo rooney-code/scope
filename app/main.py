@@ -83,6 +83,13 @@ def main() -> int:
     window.showMaximized()
 
     viewmodel.start_camera()
+    # 카메라가 열린 뒤(=start_camera() 이후)에만 실제 노드 값을 읽을 수 있다 - 시작 시
+    # settings.json 값과 카메라 실제 상태가 다를 수 있으므로, 열리자마자 한 번 동기화해서
+    # 카메라 설정 화면이 "진짜 현재값"을 보여주게 한다(사용자 요청, 2026-09-14).
+    try:
+        window.camera_settings_view.sync_from_camera()
+    except Exception as exc:  # noqa: BLE001 - 동기화 실패해도 나머지 화면은 정상 진행
+        print(f"[camera] 시작 시 설정 동기화 실패: {exc}", file=sys.stderr)
 
     exit_code = app.exec()
     viewmodel.stop_camera()

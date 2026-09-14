@@ -74,6 +74,9 @@ class MockCameraService(ICameraService):
     def apply_settings(self, settings) -> None:  # noqa: ANN001 - Mock ignores real camera params
         return None
 
+    def read_settings(self, base):  # noqa: ANN001, ANN201 - Mock은 실제 카메라 제약이 없음
+        return base, set()
+
     @property
     def is_running(self) -> bool:
         return self._running

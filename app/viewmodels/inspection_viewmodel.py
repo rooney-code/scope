@@ -149,7 +149,11 @@ class InspectionViewModel(QObject):
         result: DetectionResult = self.tracker.select(candidates)
         self.detection_ready.emit(result)
 
-        if result.found and self.calibration.profile is not None:
+        # profile이 있어도 스케일(px_per_moa)이 자동 검출 직후의 임시값(1.0)일 수 있다 -
+        # is_ready(원점+x/y 스케일 모두 확정)가 아니면 to_moa() 결과가 터무니없는 값이 되어
+        # state_machine에 잘못된 이동량/드리프트/쉬프트/백래쉬 판정을 유발할 수 있으므로
+        # (실측으로 확인된 문제, 2026-09-14) 스케일 확정 전에는 아예 피드하지 않는다.
+        if result.found and self.calibration.is_ready:
             x_moa, y_moa = self.calibration.to_moa(result.center_px)
             sample = PositionSample(timestamp_s=time.time(), x_moa=x_moa, y_moa=y_moa)
 

@@ -86,6 +86,58 @@ def test_pixel_angle_calibration_snap_and_convert():
     assert abs(y_moa - 10.0) < 1e-6
 
 
+def test_is_ready_false_until_both_axes_scale_confirmed():
+    """자동 검출 직후(원점만 앎, px_per_moa는 임시값 1.0)에는 is_ready가 False여야
+    한다 - 이 상태로 영상 크롭/MOA 계산을 하면 극단적으로 확대되거나 터무니없는 오차
+    숫자가 나오는 문제가 있었다(실측으로 확인, 2026-09-14). 두 축 모두 스냅해야 True."""
+    calib = PixelAngleCalibration()
+    from core.calibration.grid_auto_detector import GridDetectionResult
+
+    assert calib.is_ready is False  # 프로파일 자체가 없음
+
+    calib.seed_from_auto_detection("CAM-READY", GridDetectionResult(found=True, origin_px=(400.0, 300.0)))
+    assert calib.is_ready is False  # 원점만 있고 스케일은 임시값
+
+    calib.snap_tick(tick_px=460.0, known_value=10.0, unit="moa", axis="x")
+    assert calib.is_ready is False  # x축만 확정, y축은 아직 임시값
+
+    calib.snap_tick(tick_px=240.0, known_value=10.0, unit="moa", axis="y")
+    assert calib.is_ready is True  # 양쪽 축 모두 확정됨
+
+
+def test_seed_from_manual_origin_matches_auto_detection_shape():
+    """자동 검출이 실패하거나 믿을 수 없을 때, 작업자가 영상을 직접 클릭해 원점을 지정하는
+    수동 경로 - seed_from_auto_detection과 동일하게 원점만 잡고 스케일은 임시값이어야 한다
+    (사용자 요청, 2026-09-14)."""
+    calib = PixelAngleCalibration()
+    calib.seed_from_manual_origin("CAM-MANUAL", (321.5, 654.5))
+
+    assert calib.profile.origin_px_x == 321.5
+    assert calib.profile.origin_px_y == 654.5
+    assert calib.is_ready is False  # 스케일은 아직 미확정
+
+    calib.snap_tick(tick_px=381.5, known_value=10.0, unit="moa", axis="x")
+    calib.snap_tick(tick_px=594.5, known_value=10.0, unit="moa", axis="y")
+    assert calib.is_ready is True
+
+
+def test_clear_resets_to_no_profile():
+    """잘못 잡은 원점을 화살표로 되돌리기엔 너무 멀리 벗어났을 때 처음부터 다시 잡을 수
+    있도록 캘리브레이션을 완전히 지우는 기능(사용자 요청, 2026-09-14)."""
+    from core.calibration.grid_auto_detector import GridDetectionResult
+
+    calib = PixelAngleCalibration()
+    calib.seed_from_auto_detection("CAM-CLEAR", GridDetectionResult(found=True, origin_px=(400.0, 300.0)))
+    calib.snap_tick(tick_px=460.0, known_value=10.0, unit="moa", axis="x")
+    calib.snap_tick(tick_px=240.0, known_value=10.0, unit="moa", axis="y")
+    assert calib.is_ready is True
+
+    calib.clear()
+
+    assert calib.profile is None
+    assert calib.is_ready is False
+
+
 def test_pixel_angle_calibration_mrad_conversion():
     calib = PixelAngleCalibration(mrad_to_moa_ratio=3.438)
     from core.calibration.grid_auto_detector import GridDetectionResult

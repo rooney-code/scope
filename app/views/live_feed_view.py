@@ -18,7 +18,12 @@
   - 격자형(체크무늬) 오버레이 대신, 원점을 지나는 **좌표축 2개(MOA 눈금 포함)** + 레드닷
     위치를 지나는 **안내선 2개**만 그린다 - 안내선이 좌표축과 만나는 지점을 보면 레드닷의
     좌표를 바로 읽을 수 있다(사용자 피드백으로 촘촘한 격자에서 변경).
-캘리브레이션이 아직 없으면(원점을 모르는 상태) 원본 프레임을 그대로 보여준다.
+캘리브레이션이 아직 없거나(원점 모름) 스케일이 미확정(원점만 찾고 눈금 간격 미세조정 전,
+대략적인 시작 추정치 상태)이면 "시험 진행" 탭에서는 원본 프레임을 그대로 보여준다 -
+미확정 스케일로 크롭/오차 계산을 하면 극단적으로 확대되거나 터무니없는 숫자가 나오는
+문제가 있었다(실측으로 확인, 2026-09-14). 이 상태는 PixelAngleCalibration.is_ready로
+판단한다. 단, "캘리브레이션" 탭(calibration_mode)에서는 미확정 상태에서도 현재 추정치로
+원점 마커/좌표축을 그려서 미세조정 워크플로에 시각적 피드백을 준다.
 """
 from __future__ import annotations
 
@@ -71,14 +76,18 @@ class LiveFeedView(QWidget):
         self._image_label = _ClickableImageLabel("카메라 대기 중...")
         self._image_label.setAlignment(Qt.AlignCenter)
         self._image_label.setMinimumSize(200, 200)
+        # 라벨(전시 영역)과 실제 pixmap(레터박싱될 수 있음) 경계를 눈으로 구분하기 위해
+        # 배경을 검게 칠한다 - 라벨 크기 자체는 이미 맞게 잡히고 있는지, 아니면 pixmap이
+        # 작게 들어가 레터박싱되고 있는 것뿐인지 구분할 목적(사용자 요청, 2026-09-14).
+        self._image_label.setStyleSheet("background-color: black; color: white;")
         self._image_label.clicked.connect(self._on_image_clicked)
 
-        # 영상이 거의 정사각(3088x2076)이라 표시 영역도 정사각으로 강제한다. QLabel의
-        # Qt.KeepAspectRatio는 "그 안의 pixmap"만 비율을 지키는 것이라, 라벨 자체가
-        # 좌우로 넓은 직사각형으로 배치되면 위아래로 여백만 큰 작은 정사각형이 되어 버림
-        # (실측 확인). 그래서 라벨을 감싸는 컨테이너에 stretch=1을 줘 남는 공간을 전부
-        # 차지하게 하고, resizeEvent에서 그 컨테이너의 짧은 쪽 길이로 라벨을 정사각
-        # 고정크기로 강제한다.
+        # 원점 기준 크롭 결과는 거의 정사각이 되도록 설계되어 있어(원점 있음 + 시험 진행
+        # 모드일 때만) 표시 영역도 정사각으로 강제한다 - 그 외(원점 없음/캘리브레이션 모드)는
+        # 원본 프레임 비율 그대로 컨테이너를 채운다(_relayout_square_image 참고). QLabel의
+        # Qt.KeepAspectRatio는 "그 안의 pixmap"만 비율을 지키는 것이라, 라벨을 감싸는
+        # 컨테이너에 stretch=1을 줘 남는 공간을 전부 차지하게 하고, resizeEvent에서 그
+        # 컨테이너 크기를 기준으로 라벨 크기를 정한다.
         self._image_container = QWidget()
         image_container_layout = QHBoxLayout(self._image_container)
         image_container_layout.setContentsMargins(0, 0, 0, 0)
@@ -123,8 +132,6 @@ class LiveFeedView(QWidget):
         hide_all_btn = QPushButton("전체 숨기기")
         hide_all_btn.clicked.connect(lambda: self._set_all_overlay_checkboxes(False))
 
-        self._offset_label = QLabel("레드닷 오차: -")
-
         zoom_row = QHBoxLayout()
         zoom_row.addWidget(QLabel("확대 단계 (1~5, 원점 기준):"))
         zoom_row.addWidget(self._zoom_slider)
@@ -137,26 +144,76 @@ class LiveFeedView(QWidget):
         overlay_row.addWidget(show_all_btn)
         overlay_row.addWidget(hide_all_btn)
 
+        # 확대/오버레이 컨트롤은 이 위젯 자신의 레이아웃에 넣지 않고 별도 위젯(controls_widget)
+        # 으로 빼서 밖에서(MainWindow) 원하는 위치에 배치할 수 있게 한다 - 원래 영상 아래에
+        # 있었는데, 그만큼 영상 세로 공간을 깎아먹는다는 피드백이 있었다(2026-09-14).
+        # "레드닷 오차" 라벨은 여기 있었지만 시험 진행 탭의 Stage1AlignmentView가 보여주는
+        # "오차"와 같은 값(calibration.to_moa 결과)의 표시 형식만 다른 중복이라 제거했다
+        # (영상 위에 그려지는 R/U 오버레이 텍스트는 별개 기능이라 유지).
+        self.controls_widget = QWidget()
+        controls_layout = QVBoxLayout(self.controls_widget)
+        controls_layout.setContentsMargins(0, 0, 0, 0)
+        controls_layout.addLayout(zoom_row)
+        controls_layout.addLayout(overlay_row)
+
         layout = QVBoxLayout(self)
         layout.addWidget(self._image_container, stretch=1)
-        layout.addLayout(zoom_row)
-        layout.addLayout(overlay_row)
-        layout.addWidget(self._offset_label)
 
         self._last_frame: np.ndarray | None = None
         self._last_detection: DetectionResult | None = None
         self._zoom_level = 1  # 1~5, 커질수록 view_range_moa가 좁아짐(더 확대)
+        # True인 동안은 캘리브레이션 탭이어도 크롭하지 않고 원본 전체를 보여준다 - "그리드
+        # 수동 검출"로 원점을 새로 클릭해야 할 때, 이미 크롭된(어쩌면 완전히 엉뚱한 위치를
+        # 기준으로 한) 좁은 화면 안에서는 실제 크로스헤어가 아예 안 보일 수 있기 때문
+        # (CalibrationView.origin_picking_changed 시그널로 MainWindow가 연결, 2026-09-14).
+        self._calibration_origin_picking = False
         self._relayout_square_image()
 
     def resizeEvent(self, event) -> None:  # noqa: N802 - Qt override
         super().resizeEvent(event)
         self._relayout_square_image()
-
-    def _relayout_square_image(self) -> None:
-        side = max(200, min(self._image_container.width(), self._image_container.height()))
-        self._image_label.setFixedSize(side, side)
         if self._last_frame is not None:
             self._render(self._last_frame, self._last_detection)
+
+    def _is_cropped_view(self) -> bool:
+        """지금 원점 기준으로 크롭/확대해서 보여줘야 하는 상태인지 - 시험 진행 탭과
+        캘리브레이션 탭이 조건만 다를 뿐 같은 크롭 로직(_crop_and_resize_around_origin)을
+        쓴다(사용자 요청: 캘리브레이션에서도 시험 진행과 동일한 방식으로 확대해서 원점/눈금을
+        미세조정하기 쉽게 해달라, 2026-09-14).
+
+        - 캘리브레이션 탭: 원점 지정 대기 상태(그리드 수동 검출 armed)가 아니고, 원점이
+          하나라도 있으면(스케일 미확정이어도) 크롭한다 - 스케일이 아직 대략치여도 원점
+          주변을 확대해서 보여줘야 미세조정이 쉬워지기 때문.
+        - 시험 진행 탭: is_ready(원점+스케일 모두 확정)일 때만 크롭한다 - 미확정 스케일로
+          크롭하면 범위 계산이 엉터리라서(_render의 profile 변수 참고).
+        """
+        if self._calibration_mode:
+            return (
+                not self._calibration_origin_picking
+                and self._calibration is not None
+                and self._calibration.profile is not None
+            )
+        return self._calibration is not None and self._calibration.is_ready
+
+    def set_calibration_origin_picking(self, enabled: bool) -> None:
+        self._calibration_origin_picking = enabled
+        if self._last_frame is not None:
+            self._render(self._last_frame, self._last_detection)
+
+    def _relayout_square_image(self) -> None:
+        """실제로 원점 기준 크롭을 보여줄 때만(_is_cropped_view) 라벨을 정사각으로 고정한다 -
+        view_range_moa가 x/y 동일해 크롭 결과가 거의 정사각이 되도록 설계됐기 때문이다.
+        크롭하지 않을 때(원점 없음, 원점 지정 대기 중, 시험 진행 탭에서 스케일 미확정)는
+        원본 프레임 자체가 정사각이 아니므로(예: 3088x2076, 가로가 긴 비율) 억지로 정사각에
+        맞추면 위아래 레터박스 여백만 커진다 - 이때는 컨테이너를 그대로 채운다(사용자 피드백:
+        원점 못 찾았을 때 화면을 꽉 채워 보여줘야 한다, 2026-09-14)."""
+        if self._is_cropped_view():
+            side = max(200, min(self._image_container.width(), self._image_container.height(), 960))
+            self._image_label.setFixedSize(side, side)
+        else:
+            w = max(200, min(self._image_container.width(), 960))
+            h = max(200, min(self._image_container.height(), 960))
+            self._image_label.setFixedSize(w, h)
 
     def set_calibration(self, calibration: PixelAngleCalibration) -> None:
         self._calibration = calibration
@@ -232,11 +289,29 @@ class LiveFeedView(QWidget):
             self._render(self._last_frame, result)
 
     def _render(self, frame_bgr: np.ndarray, detection: DetectionResult | None) -> None:
-        profile = self._calibration.profile if self._calibration is not None else None
+        # 원점(캘리브레이션) 유무/모드에 따라 정사각 강제 여부가 달라지므로(_relayout_square_image
+        # 참고) 매 프레임 다시 반영한다 - 시험 도중 캘리브레이션이 막 완료된 경우 등, 창 크기
+        # 변경 없이도 라벨 형태가 바뀌어야 하는 시점을 놓치지 않기 위함.
+        self._relayout_square_image()
 
-        if self._calibration_mode:
-            # 캘리브레이션은 먼 tick(예: ±35MOA 근처)도 클릭해야 하므로 크롭하지 않고 원본
-            # 전체를 보여준다 - 오버레이(격자/원점/레드닷/오차 텍스트)도 그리지 않는다.
+        # 원점만 있고 스케일(px_per_moa)이 아직 대략적인 시작 추정치인 미확정 캘리브레이션은
+        # "시험 진행" 탭의 크롭/오차 계산에 쓰면 극단적으로 확대되거나 터무니없는 숫자가
+        # 나온다(실측으로 확인된 문제, 2026-09-14) - is_ready(원점+x/y 스케일 모두 확정)일
+        # 때만 profile을 실제로 넘기고, 그 전에는 캘리브레이션이 아예 없는 것처럼(원본 그대로)
+        # 취급한다. 캘리브레이션 탭은 미확정이어도 크롭해야 하므로 raw_profile을 따로 쓴다
+        # (_is_cropped_view 참고 - 사용자 요청: 캘리브레이션도 시험 진행과 동일하게 원점
+        # 기준으로 확대해서 미세조정하기 쉽게 해달라, 2026-09-14).
+        profile = self._calibration.profile if self._calibration is not None and self._calibration.is_ready else None
+        raw_profile = self._calibration.profile if self._calibration is not None else None
+        crop_profile = raw_profile if self._calibration_mode else profile
+
+        if self._is_cropped_view():
+            display, transform = self._crop_and_resize_around_origin(frame_bgr, crop_profile)
+        elif self._calibration_mode:
+            # 원점이 아직 없거나(자동/수동 검출 전) 원점 지정 대기 상태(그리드 수동 검출
+            # armed)면 크롭하지 않고 원본 전체를 보여준다 - 실제 크로스헤어가 화면 어디에
+            # 있는지 모르는 상태에서 크롭하면 그 크로스헤어 자체가 화면 밖으로 나가 클릭할
+            # 수 없게 될 수 있기 때문.
             display, transform = self._scale_to_display_size(frame_bgr)
         else:
             display, transform = self._crop_and_resize_around_origin(frame_bgr, profile)
@@ -245,6 +320,23 @@ class LiveFeedView(QWidget):
         self._last_transform = transform
 
         if self._calibration_mode:
+            # 레드닷/안내선/오차 텍스트는 캘리브레이션 대상이 아니므로 그리지 않는다. 원점
+            # 마커/좌표축은 스케일이 미확정이어도 현재 추정치로 그린다 - 그래야 자동/수동
+            # 검출 직후 원점 위치를 바로 확인하고, 눈금 간격 미세조정 버튼을 누르며 빨간
+            # 좌표축이 실제 그리드와 맞는지 눈으로 보고 맞춰나갈 수 있다(사용자 요청,
+            # 2026-09-14 - 이 시각적 피드백이 없으면 미세조정 워크플로 자체가 불가능함).
+            if raw_profile is not None:
+                ox, oy = self._transform_point((raw_profile.origin_px_x, raw_profile.origin_px_y), transform)
+                cv2.drawMarker(display, (int(round(ox)), int(round(oy))), _ORIGIN_MARKER_COLOR_BGR, cv2.MARKER_CROSS, 20, 2)
+                display_profile = self._transform_profile(raw_profile, transform)
+                display = draw_coordinate_axes(
+                    display,
+                    display_profile,
+                    tick_step_moa=1.0,
+                    label_step_moa=self._current_axis_label_step_moa(),
+                    max_moa_range=self._current_view_range_moa(),
+                )
+
             rgb = cv2.cvtColor(display, cv2.COLOR_BGR2RGB)
             h, w, ch = rgb.shape
             qimg = QImage(rgb.data, w, h, ch * w, QImage.Format_RGB888)
@@ -304,25 +396,20 @@ class LiveFeedView(QWidget):
     def _draw_offset_text(
         self, display: np.ndarray, detection: DetectionResult | None, profile, show_on_image: bool
     ) -> None:
-        """레드닷이 원점 기준 좌우/상하로 몇 MOA 벗어나 있는지 화면 좌하단에 표시.
+        """레드닷이 원점 기준 좌우/상하로 몇 MOA 벗어나 있는지 영상 좌하단에 표시.
 
-        cv2.putText는 한글 글리프가 없어 깨지므로 영문 라벨(R/L/U/D)만 사용한다.
-        영상 하단의 별도 Qt 라벨(self._offset_label)은 화면 자체를 가리지 않으므로 이
-        오버레이 텍스트 체크박스와 무관하게 항상 갱신한다 - show_on_image는 영상 위에
-        그려 넣는 텍스트(cv2.putText)만 켜고 끈다.
+        cv2.putText는 한글 글리프가 없어 깨지므로 영문 라벨(R/L/U/D)만 사용한다. 같은 값을
+        보여주는 Qt 라벨은 시험 진행 탭의 Stage1AlignmentView.offset_label과 중복이라
+        제거했다(2026-09-14) - show_on_image(오버레이 표시 > "오차 정보(R/U)" 체크박스)로
+        영상 위 텍스트만 켜고 끈다.
         """
-        if detection is None or not detection.found or profile is None or self._calibration is None:
-            self._offset_label.setText("레드닷 오차: -")
+        if not show_on_image or detection is None or not detection.found or profile is None or self._calibration is None:
             return
 
         x_moa, y_moa = self._calibration.to_moa(detection.center_px)
         lr = "R" if x_moa >= 0 else "L"
         ud = "U" if y_moa >= 0 else "D"
         text = f"{lr} {abs(x_moa):.2f} MOA  /  {ud} {abs(y_moa):.2f} MOA"
-        self._offset_label.setText(f"레드닷 오차: {text}")
-
-        if not show_on_image:
-            return
 
         h, w = display.shape[:2]
         font_scale = max(1.0, w / 1400)  # 해상도에 비례해 글자 크기 자동 조절 (가독성 확보)

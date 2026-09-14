@@ -50,6 +50,21 @@ class ICameraService(ABC):
         수동값 설정을 무시/거부하는 경우가 있음 - docs 계획 참고).
         """
 
+    @abstractmethod
+    def read_settings(self, base: "CameraSettings") -> tuple["CameraSettings", set[str]]:  # noqa: F821
+        """카메라의 현재 값을 읽어 base(보통 settings.json에서 불러온 이전 값)를 그
+        필드들만 덮어쓴 새 CameraSettings와 함께, 지금 편집해도 실제로는 적용되지 않는
+        필드 이름 집합을 반환한다 - 카메라 노드에 아예 연동 안 된 필드(계획 문서 자리만
+        마련된 것들)와, 연동은 됐지만 지금 카메라 상태에서 쓸 수 없는(NotImplemented/
+        NotAvailable/ReadOnly) 필드를 모두 포함한다. UI는 이 집합에 해당하는 입력 위젯을
+        비활성화해서 "바꿔도 소용없는 값"을 사용자가 수정하지 못하게 한다(사용자 요청,
+        2026-09-14). 프로그램 시작 시 자동으로, 그리고 사용자가 "카메라에서 불러오기"를
+        누를 때 호출된다 - 후자는 화면의 현재 편집값을 버리고 이 결과로 덮어쓴다.
+
+        Mock/Playback처럼 실제 카메라가 없는 구현체는 base를 그대로, 빈 집합과 함께
+        반환해도 된다(카메라 제약이 없으니 전부 편집 가능하다고 간주).
+        """
+
     @property
     @abstractmethod
     def is_running(self) -> bool:

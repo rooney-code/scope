@@ -18,6 +18,11 @@ def _make_calibration(origin_px: tuple[float, float], px_per_moa: float = 6.0) -
     calib.seed_from_auto_detection("CAM", GridDetectionResult(found=True, origin_px=origin_px))
     calib.profile.px_per_moa_x = px_per_moa
     calib.profile.px_per_moa_y = px_per_moa
+    # is_ready(스케일 확정)가 False면 크롭/오차 계산이 적용되지 않으므로(2026-09-14 변경),
+    # 이 헬퍼가 시뮬레이션하는 "완전히 캘리브레이션된 카메라" 상태를 정확히 나타내려면
+    # 두 축 모두 확정 표시가 필요하다.
+    calib.profile.scale_confirmed_x = True
+    calib.profile.scale_confirmed_y = True
     return calib
 
 
@@ -113,9 +118,10 @@ def test_axis_label_step_picks_a_readable_spacing():
     assert view._current_axis_label_step_moa() <= 5.0
 
 
-def test_calibration_mode_skips_crop_even_with_profile_set():
-    """캘리브레이션 탭에서는 먼 tick(예: ±35MOA 근처)도 클릭할 수 있어야 하므로, 캘리브레이션
-    프로파일이 있어도 크롭하지 않고 원본 전체를 (비율 유지) 축소만 해서 보여줘야 한다."""
+def test_calibration_mode_crops_around_origin_like_test_tab():
+    """캘리브레이션에서도 시험 진행 탭과 동일하게 원점 기준으로 확대해서 보여줘야 미세조정이
+    쉽다는 사용자 요청(2026-09-14) - 원점(프로파일)이 있고 원점 지정 대기 상태가 아니면
+    스케일이 미확정이어도 크롭해야 한다."""
     calib = _make_calibration((500.0, 500.0), px_per_moa=6.0)
     view = LiveFeedView(default_view_range_moa=45.0, display_target_size=800)
     view.set_calibration(calib)
@@ -124,9 +130,55 @@ def test_calibration_mode_skips_crop_even_with_profile_set():
     frame = np.zeros((1000, 2000, 3), dtype=np.uint8)
     view.on_frame(frame)
 
-    # display_target_size=800, 원본 비율 2:1 유지 -> 800x400 (크롭됐다면 훨씬 작은 영역이 됨)
+    # 원본 전체(2000x1000)가 아니라 원점 주변 ±45MOA*6px/MOA=270px 반경으로 크롭된 뒤
+    # display_target_size=800에 맞춰 리사이즈됨 -> 원본 그대로였다면 (800, 400)이었을 것
+    assert view._last_display_size != (800, 400)
+    assert view._last_transform != (0.0, 0.0, 0.4)
+
+
+def test_calibration_mode_origin_picking_skips_crop():
+    """"그리드 수동 검출"로 원점 지정을 기다리는 동안(armed)에는, 프로파일에 이미 (어쩌면
+    잘못된) 원점이 있어도 크롭하지 않고 원본 전체를 보여줘야 한다 - 안 그러면 새로 클릭해야
+    할 실제 크로스헤어가 크롭된 화면 밖에 있어 클릭할 수 없는 경우가 생긴다(2026-09-14)."""
+    calib = _make_calibration((500.0, 500.0), px_per_moa=6.0)
+    view = LiveFeedView(default_view_range_moa=45.0, display_target_size=800)
+    view.set_calibration(calib)
+    view.set_calibration_mode(True)
+    view.set_calibration_origin_picking(True)
+
+    frame = np.zeros((1000, 2000, 3), dtype=np.uint8)
+    view.on_frame(frame)
+
     assert view._last_display_size == (800, 400)
     assert view._last_transform == (0.0, 0.0, 0.4)
+
+
+def test_calibration_mode_draws_origin_marker_even_without_confirmed_scale():
+    """캘리브레이션 탭에서 원점을 찾은 뒤(자동/수동 검출 직후, 스케일은 아직 대략적인
+    시작 추정치) 아무 표시도 없어서 화살표 미세조정 워크플로가 안 됐던 문제에 대한 회귀
+    테스트(사용자 피드백, 2026-09-14). 원점 마커/좌표축은 스케일 확정 여부와 무관하게
+    (현재 추정치로) 그려져야 한다 - 그래야 눈금 간격 미세조정 버튼을 누르며 눈으로 보고
+    실제 그리드와 맞출 수 있다."""
+    calib = PixelAngleCalibration()
+    calib.seed_from_auto_detection("CAM", GridDetectionResult(found=True, origin_px=(1000.0, 500.0)))
+    assert calib.is_ready is False  # 스케일 미확정 상태 그대로 둠
+
+    view = LiveFeedView(display_target_size=800)
+    view.set_calibration(calib)
+    view.set_calibration_mode(True)
+
+    frame = np.zeros((1000, 2000, 3), dtype=np.uint8)
+    view.on_frame(frame)
+
+    pixmap = view._image_label.pixmap()
+    from PySide6.QtGui import QImage
+
+    qimg = pixmap.toImage().convertToFormat(QImage.Format_RGB32)
+    w, h = qimg.width(), qimg.height()
+    buf = qimg.constBits()
+    arr = np.frombuffer(buf, dtype=np.uint8).reshape((h, qimg.bytesPerLine() // 4, 4))[:, :w, :3]
+
+    assert not np.array_equal(arr, np.zeros_like(arr))  # 마커가 그려져 순수 검은 화면이 아니어야 함
 
 
 def test_calibration_mode_click_maps_back_to_original_frame_coords():
@@ -157,9 +209,11 @@ def test_calibration_mode_click_maps_back_to_original_frame_coords():
     assert received == []
 
 
-def test_offset_text_uses_ascii_labels_not_korean():
+def test_offset_text_draws_ascii_labels_on_image():
     """cv2.putText는 한글을 지원하지 않아 깨지므로, 오버레이에 굽는 텍스트는 R/L/U/D 같은
-    영문 라벨만 사용해야 한다(라벨 문구 자체는 한글이어도 되는 self._offset_label은 예외)."""
+    영문 라벨만 사용해야 한다. 별도 Qt 라벨(과거 self._offset_label)은 시험 진행 탭의
+    Stage1AlignmentView.offset_label과 중복이라 제거했다(2026-09-14) - 이제는 영상 위
+    cv2 오버레이만 검증한다."""
     calib = _make_calibration((0.0, 0.0), px_per_moa=6.0)
     view = LiveFeedView()
     view.set_calibration(calib)
@@ -171,14 +225,13 @@ def test_offset_text_uses_ascii_labels_not_korean():
 
     view._draw_offset_text(frame, detection, calib.profile, True)
 
-    assert "R" in view._offset_label.text() or "L" in view._offset_label.text()
+    assert not np.array_equal(frame, np.zeros((200, 200, 3), dtype=np.uint8))  # 배경 박스 + 텍스트가 그려짐
     assert all(ord(c) < 128 for c in ["R", "L", "U", "D"])  # ASCII 라벨만 사용함을 명시
 
 
-def test_offset_text_checkbox_off_updates_label_but_not_image():
-    """show_on_image=False(체크박스 꺼짐)이면 영상 위 텍스트는 그리지 않되, 하단 별도
-    라벨(self._offset_label)은 그대로 갱신되어야 한다 - 사용자 요청(2026-09-13): 오버레이
-    항목별 개별 표시/숨기기."""
+def test_offset_text_checkbox_off_draws_nothing():
+    """show_on_image=False(체크박스 꺼짐)이면 영상 위에 아무것도 그리지 않아야 한다 -
+    사용자 요청(2026-09-13): 오버레이 항목별 개별 표시/숨기기."""
     from core.vision.red_dot_detector import DetectionResult
 
     calib = _make_calibration((0.0, 0.0), px_per_moa=6.0)
@@ -191,7 +244,6 @@ def test_offset_text_checkbox_off_updates_label_but_not_image():
     view._draw_offset_text(frame, detection, calib.profile, False)
 
     assert np.array_equal(frame, np.zeros((200, 200, 3), dtype=np.uint8))  # 영상에는 아무것도 안 그려짐
-    assert "MOA" in view._offset_label.text()  # 하단 라벨은 그대로 갱신됨
 
 
 def test_overlay_checkboxes_independently_control_rendered_elements():

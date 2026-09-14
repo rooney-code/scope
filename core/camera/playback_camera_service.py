@@ -11,6 +11,8 @@ Mock/실기(IDS peak)/재생 소스를 서로 교체해서 쓸 수 있다.
 """
 from __future__ import annotations
 
+import ctypes
+import sys
 import threading
 import time
 from pathlib import Path
@@ -22,6 +24,20 @@ from core.camera.camera_service import CameraInfo, FrameCallback, ICameraService
 
 _IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"}
 _VIDEO_EXTENSIONS = {".mp4", ".avi", ".mov", ".mkv", ".wmv"}
+
+
+def _video_capture_path(path: str) -> str:
+    """cv2.VideoCapture는 cv2.imread와 같은 부류로, Windows에서 비-ASCII(한글 등) 경로를
+    못 여는 경우가 있다 - imread처럼 바이트를 직접 디코딩하는 우회(imdecode)가 스트리밍
+    영상에는 없으므로, 대신 항상 ASCII인 8.3 짧은 경로명으로 바꿔서 연다. 짧은 경로를
+    못 구하면(Windows가 아니거나 단축 경로가 비활성화된 드라이브) 원래 경로를 그대로
+    쓴다 - 이 경우 ASCII 경로면 문제없이 열리고, 비-ASCII면 이전과 동일하게 실패한다."""
+    if sys.platform != "win32":
+        return path
+    buf = ctypes.create_unicode_buffer(260)
+    if ctypes.windll.kernel32.GetShortPathNameW(path, buf, 260):
+        return buf.value
+    return path
 
 
 class PlaybackCameraService(ICameraService):
@@ -48,12 +64,17 @@ class PlaybackCameraService(ICameraService):
             raise FileNotFoundError(f"재생 소스를 찾을 수 없습니다: {self.source_path}")
 
         if self._mode == "image":
-            frame = cv2.imread(str(self.source_path))
+            # cv2.imread(str(path))는 Windows에서 비-ASCII(한글 등) 경로를 OS 코드페이지로
+            # 잘못 처리해 파일을 못 찾는 버그가 있다(예: "O:\10. 프로젝트\scope\..." 같은
+            # 경로에서 재현됨, 실측 확인). np.fromfile은 Python 자체 파일 I/O라 유니코드
+            # 경로를 문제없이 열 수 있으므로, 바이트로 읽은 뒤 cv2.imdecode로 디코딩한다.
+            file_bytes = np.fromfile(str(self.source_path), dtype=np.uint8)
+            frame = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
             if frame is None:
                 raise RuntimeError(f"이미지를 읽을 수 없습니다: {self.source_path}")
             self._still_frame = frame
         else:
-            self._cap = cv2.VideoCapture(str(self.source_path))
+            self._cap = cv2.VideoCapture(_video_capture_path(str(self.source_path)))
             if not self._cap.isOpened():
                 raise RuntimeError(f"영상을 열 수 없습니다: {self.source_path}")
 
@@ -89,6 +110,9 @@ class PlaybackCameraService(ICameraService):
 
     def apply_settings(self, settings) -> None:  # noqa: ANN001 - 재생 소스는 카메라 파라미터 없음
         return None
+
+    def read_settings(self, base):  # noqa: ANN001, ANN201 - 재생 소스는 실제 카메라 제약이 없음
+        return base, set()
 
     @property
     def is_running(self) -> bool:
