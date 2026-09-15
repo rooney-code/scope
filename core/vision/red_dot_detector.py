@@ -42,7 +42,10 @@ class RedDotDetector:
         self.settings = settings or DetectionSettings()
 
     def detect(
-        self, frame_bgr: np.ndarray, roi_px: tuple[float, float, float, float] | None = None
+        self,
+        frame_bgr: np.ndarray,
+        roi_px: tuple[float, float, float, float] | None = None,
+        head_direction_hint_px: tuple[float, float] | None = None,
     ) -> list[DetectionResult]:
         """프레임에서 후보 블롭을 모두 검출해 반환한다 (여러 개일 수 있음).
 
@@ -52,6 +55,12 @@ class RedDotDetector:
         확정되면 레드닷이 벗어날 수 없는 범위가 명확해지므로(호출부 참고), 그 영역
         밖은 아예 스캔하지 않는다. 반환되는 좌표/윤곽선은 모두 원본 프레임 좌표계로
         다시 변환되므로 호출부는 roi 유무를 신경 쓸 필요가 없다.
+
+        head_direction_hint_px: (dx, dy) 방향 힌트(부호만 씀) - 코멧테일인데 머리/꼬리
+        밝기 차이가 애매한 경우(_fit_head_square의 MIN_HEAD_CONTRAST_RATIO 미달) 무게
+        중심 대신 이 방향으로 살짝 옮긴 추정치를 쓴다. 보통 현재 시험 중인 방향(상/하/
+        좌/우)을 호출부(InspectionViewModel)가 넘겨준다 - 그 방향으로 레드닷이 멀어지며
+        늘어지는 것이므로 "머리"도 그쪽에 있다고 본다(사용자 제안, 2026-09-15).
         """
         offset_x, offset_y = 0, 0
         search_frame = frame_bgr
@@ -83,11 +92,22 @@ class RedDotDetector:
         for contour in contours:
             area = cv2.contourArea(contour)
             if area < s.min_blob_area or area > s.max_blob_area:
+                if s.debug_logging:
+                    reason = "너무 작음" if area < s.min_blob_area else "너무 큼"
+                    print(
+                        f"[detect] 제외({reason}): area={area:.0f} "
+                        f"(허용 {s.min_blob_area:.0f}~{s.max_blob_area:.0f})"
+                    )
                 continue
 
             perimeter = cv2.arcLength(contour, True)
             circularity = (4 * np.pi * area / (perimeter**2)) if perimeter > 0 else 0.0
             if circularity < s.min_circularity:
+                if s.debug_logging:
+                    print(
+                        f"[detect] 제외(비원형): area={area:.0f} circularity={circularity:.3f} "
+                        f"(최소 {s.min_circularity:.2f})"
+                    )
                 continue
 
             # 면적/원형도만으로 못 걸러낸 가짜 후보(문자/눈금 반사)를 피크 밝기로 추가 검증한다
@@ -101,6 +121,11 @@ class RedDotDetector:
             seg_v = value_channel[by : by + bh, bx : bx + bw]
             peak_v = int(seg_v[local_mask > 0].max()) if (local_mask > 0).any() else 0
             if peak_v < s.min_peak_brightness:
+                if s.debug_logging:
+                    print(
+                        f"[detect] 제외(어두움): area={area:.0f} circularity={circularity:.3f} "
+                        f"peak_v={peak_v} (최소 {s.min_peak_brightness})"
+                    )
                 continue
 
             moments = cv2.moments(contour)
@@ -111,7 +136,16 @@ class RedDotDetector:
             if len(contour) >= 5:
                 ellipse = cv2.fitEllipse(contour)
 
-            core_circle = self._fit_head_square(contour, mask, value_channel)
+            core_circle = self._fit_head_square(
+                contour, mask, value_channel, head_direction_hint_px, s.debug_logging, (offset_x, offset_y)
+            )
+            if s.debug_logging:
+                elongation = max(bw, bh) / min(bw, bh) if min(bw, bh) > 0 else 0.0
+                center_method = "head_square" if core_circle is not None else "centroid"
+                print(
+                    f"[detect] 형상: bbox=({bw}x{bh}) elongation={elongation:.2f} "
+                    f"center_method={center_method}"
+                )
             if core_circle is not None:
                 # 정사각형 분할로 찾은 "머리"의 중심을 그대로 검출 중심으로 사용 - 코멧테일
                 # 꼬리를 포함해 쏠리는 문제가 없는 기하학적 방법이므로, 픽셀 단위 밝기
@@ -135,6 +169,12 @@ class RedDotDetector:
                     (ccx, ccy), cradius = core_circle
                     core_circle = ((ccx + offset_x, ccy + offset_y), cradius)
 
+            if s.debug_logging:
+                print(
+                    f"[detect] 후보: area={area:.0f} circularity={circularity:.3f} "
+                    f"peak_v={peak_v} center=({center[0]:.1f},{center[1]:.1f})"
+                )
+
             results.append(
                 DetectionResult(
                     found=True,
@@ -145,6 +185,10 @@ class RedDotDetector:
                     area_px2=area,
                 )
             )
+
+        if s.debug_logging and not results:
+            where = f"ROI({roi_px[0]:.0f},{roi_px[1]:.0f})~({roi_px[2]:.0f},{roi_px[3]:.0f})" if roi_px else "전체 프레임"
+            print(f"[detect] 후보 없음 - {where} 안에서 조건을 통과한 윤곽선이 하나도 없음")
 
         results.sort(key=lambda r: r.area_px2, reverse=True)
         return results
@@ -180,17 +224,27 @@ class RedDotDetector:
 
     @staticmethod
     def _fit_head_square(
-        contour: np.ndarray, mask: np.ndarray, value_channel: np.ndarray
+        contour: np.ndarray,
+        mask: np.ndarray,
+        value_channel: np.ndarray,
+        head_direction_hint_px: tuple[float, float] | None = None,
+        debug_logging: bool = False,
+        debug_offset_px: tuple[float, float] = (0.0, 0.0),
     ) -> tuple[tuple[float, float], float] | None:
-        """윤곽선의 바운딩박스를 정사각형(한 변 = 짧은 변, 즉 늘어지지 않은 방향의 폭)들의
-        연속으로 나눠보고, 그중 가장 밝은 정사각형을 "머리"(실제 원형 LED 광원)로 본다.
+        """윤곽선의 바운딩박스를 짧은 변(늘어지지 않은 방향의 폭) 지름의 원으로, 긴 축을
+        따라 겹치게(슬라이딩 윈도우) 훑으면서 평균 밝기가 가장 높은 위치를 "머리"(실제
+        원형 LED 광원)로 본다.
 
         코멧테일 꼬리는 늘어지는 방향으로만 길어지고 폭(짧은 변)은 거의 그대로 유지된다
         (실측으로 확인 - docs/detection_notes.md 10차 참고: 중심 부근 원형 폭 27px, 35MOA
         부근 늘어진 폭도 20px로 큰 차이 없음). 즉 짧은 변 길이가 곧 실제 LED 코어의 지름에
-        해당하므로, 바운딩박스를 그 폭 크기의 정사각형들로 나누면 각 정사각형이 대략
-        "그 위치의 단면"을 나타내고, 가장 밝은 정사각형이 꼬리가 아닌 머리다. 절대/상대 밝기
-        임계값을 튜닝할 필요가 없는 순수 기하학적 방법(사용자 제안, 2026-09-13).
+        해당하므로, 그 지름의 원으로 단면을 재면 가장 밝은 위치가 꼬리가 아닌 머리다.
+        절대/상대 밝기 임계값을 튜닝할 필요가 없는 순수 기하학적 방법(사용자 제안,
+        2026-09-13). 처음엔 원이 아니라 정사각형 블록으로 겹치지 않게 등분했었는데,
+        실제 원형 광원이 두 블록 경계에 걸치면 어느 블록도 그 밝기를 온전히 못 담아
+        밝기 차이가 실제보다 작게 측정되는(그래서 머리/꼬리 확신을 못 갖는 경우가
+        잦아지는) 문제가 있었다(사용자 지적, 2026-09-15) - 원형 슬라이딩 윈도우는 경계
+        위치와 무관하게 항상 같은 모양으로 광원을 담아 이 손실이 줄어든다.
 
         단, 세로/가로 비율이 MIN_ELONGATION_RATIO(2.0) 미만이면(거의 원형에 가까움)
         아예 적용하지 않고 None을 반환한다(호출부가 무게중심 계산으로 폴백) - 살짝만
@@ -218,37 +272,52 @@ class RedDotDetector:
 
         vertical = h >= w
         length = h if vertical else w
-        segment_count = max(1, round(length / side))
+        radius_px = side / 2.0
 
+        # 긴 축을 따라 원형 창을 겹치게(step을 반지름의 1/2 정도로 촘촘히) 슬라이딩한다 -
+        # 창 하나하나가 정확히 "그 위치의 단면"이 되도록 반지름은 항상 radius_px로 고정.
+        # 창이 bbox 경계에서 잘리는 위치([0, radius_px)와 (length-radius_px, length])는
+        # 제외한다 - 잘린 창은 실제 면적의 절반도 안 되는데도 평균 밝기 계산에는 그
+        # 사실이 반영되지 않아(평균은 표본 개수와 무관), 머리 내부에 완전히 들어가는
+        # 정상 창과 "우연히 똑같이 순수 최댓값"으로 동률 처리되는 문제가 있었다(실측으로
+        # 확인, 2026-09-15: 진짜 중심 x=200인데 경계에서 잘린 창들까지 동률 평균에 끼어
+        # x=196 근처로 쏠림). MIN_ELONGATION_RATIO(2.0) 덕분에 length >= 4*radius_px가
+        # 보장되므로 [radius_px, length-radius_px] 구간은 항상 폭 2*radius_px 이상으로
+        # 비어있지 않다.
+        step = max(1.0, radius_px / 2.0)
+        lo_bound, hi_bound = radius_px, length - radius_px
+        positions = [p for p in np.arange(lo_bound, hi_bound, step)]
+        if not positions or positions[-1] != hi_bound:
+            positions.append(hi_bound)
+
+        ys, xs = np.mgrid[0:h, 0:w]
         segments: list[tuple[float, tuple[float, float]]] = []  # (avg_brightness, center)
-        for i in range(segment_count):
-            lo = int(round(i * length / segment_count))
-            hi = int(round((i + 1) * length / segment_count))
+        for p in positions:
             if vertical:
-                seg_mask = local_mask[lo:hi, :] > 0
-                seg_value = value_channel[y + lo : y + hi, x : x + w]
-                center = (x + w / 2.0, y + (lo + hi) / 2.0)
+                cx_local, cy_local = w / 2.0, p
             else:
-                seg_mask = local_mask[:, lo:hi] > 0
-                seg_value = value_channel[y : y + h, x + lo : x + hi]
-                center = (x + (lo + hi) / 2.0, y + h / 2.0)
+                cx_local, cy_local = p, h / 2.0
 
-            count = int(seg_mask.sum())
+            window_mask = ((xs - cx_local) ** 2 + (ys - cy_local) ** 2 <= radius_px**2) & (local_mask > 0)
+            count = int(window_mask.sum())
             if count == 0:
                 continue
-            avg_brightness = float(seg_value[seg_mask].astype(np.float64).sum()) / count
-            segments.append((avg_brightness, center))
+            avg_brightness = float(value_channel[y : y + h, x : x + w][window_mask].astype(np.float64).sum()) / count
+            segments.append((avg_brightness, (x + cx_local, y + cy_local)))
 
         if not segments:
             return None
 
-        # 밝기가 거의 동일한(대략 균일한 밝기의 정상적인 원형/타원형 - 코멧테일이 아닌 경우)
-        # 구간들 사이에서는 특정 구간을 임의로(예: 첫 구간) 고르지 않고, 동률인 구간들의
-        # 중심을 평균해 대칭적인 결과가 나오게 한다(구간 수가 짝수라 정중앙 구간이 없어도
-        # 대칭 위치를 유지). 코멧테일처럼 한 구간이 뚜렷이 밝을 때만 그 구간 하나만 남아
-        # 그대로 선택된다.
+        # 예전(정사각형을 겹치지 않게 몇 개 안 되는 블록으로 등분)에는 대칭인 모양이면
+        # 두 블록이 거의 동률이 되어, 그 동률 블록들의 중심을 평균해야 대칭 위치가
+        # 나왔다. 슬라이딩 원(연속적으로 촘촘히 겹쳐 스캔)에서는 대칭인 모양이면 스캔
+        # 자체가 이미 정중앙에서 정점을 찍으므로 평균이 필요 없다 - 오히려 정점 부근의
+        # 완만하게 퍼지는 곡선(코멧테일처럼 한쪽으로만 서서히 어두워지는 경우)에서 정점
+        # 근처의 비대칭적으로 많은 샘플까지 평균에 끼면 다시 꼬리 쪽으로 쏠리는 회귀가
+        # 실측으로 확인됐다(2026-09-15) - 부동소수점 오차 수준의 완전한 동률에서만
+        # 평균내고, 그 외에는 정점 위치를 그대로 쓴다.
         max_brightness = max(b for b, _ in segments)
-        tolerance = max_brightness * 0.02
+        tolerance = max_brightness * 1e-6
         winners = [c for b, c in segments if b >= max_brightness - tolerance]
         losers_brightness = [b for b, _ in segments if b < max_brightness - tolerance]
 
@@ -262,17 +331,29 @@ class RedDotDetector:
         if losers_brightness:
             losers_avg = sum(losers_brightness) / len(losers_brightness)
             if losers_avg <= 0 or max_brightness < losers_avg * (1 + MIN_HEAD_CONTRAST_RATIO):
+                # 밝기로 머리/꼬리를 구분할 수 없는 경우(예: 타원 전체가 고르게 밝음 -
+                # 실측으로 확인, 2026-09-15) - 한때 진행방향 힌트로 반지름만큼 옮기는
+                # 보정을 시도했으나, 일단 빼기로 함(사용자 요청, 2026-09-15 - 슬라이딩
+                # 원 방식 자체의 정확도를 먼저 방향 힌트 없이 검증한 뒤 다시 판단하기로
+                # 함). head_direction_hint_px 파라미터/전달 경로는 나중에 다시 켤 수
+                # 있도록 그대로 남겨둔다.
+                if debug_logging:
+                    print("[detect] head_square: 밝기 대비 부족 -> 무게중심 폴백")
                 return None
 
+        if debug_logging:
+            print("[detect] head_square: 밝기 대비로 머리 확정(신뢰도 높음)")
         best_center = (
             sum(c[0] for c in winners) / len(winners),
             sum(c[1] for c in winners) / len(winners),
         )
         return (best_center, side / 2.0)
 
-    def detect_best(self, frame_bgr: np.ndarray) -> DetectionResult:
+    def detect_best(
+        self, frame_bgr: np.ndarray, head_direction_hint_px: tuple[float, float] | None = None
+    ) -> DetectionResult:
         """가장 큰 블롭 하나만 반환 (연속성 게이팅이 필요 없는 단순한 경우)."""
-        candidates = self.detect(frame_bgr)
+        candidates = self.detect(frame_bgr, head_direction_hint_px=head_direction_hint_px)
         if not candidates:
             return DetectionResult(found=False)
         return candidates[0]

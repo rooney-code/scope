@@ -50,7 +50,6 @@ class Stage1AlignmentView(QWidget):
         layout.addWidget(self.status_label)
         layout.addWidget(self.offset_label)
         layout.addWidget(proceed_btn)
-        layout.addStretch(1)
 
     def set_calibration(self, calibration) -> None:
         self._calibration = calibration

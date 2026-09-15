@@ -1,3 +1,6 @@
+import tempfile
+from pathlib import Path
+
 import numpy as np
 import cv2
 from PySide6.QtWidgets import QApplication
@@ -5,6 +8,7 @@ import pytest
 
 from app.viewmodels.inspection_viewmodel import InspectionViewModel
 from core.camera.mock_camera_service import MockCameraService
+from core.camera.playback_camera_service import PlaybackCameraService
 from core.config.settings import load_default_settings
 from core.data.repository import InspectionRepository
 from core.inspection.models import TravelDirection, Verdict
@@ -119,3 +123,121 @@ def test_retest_direction_delegates_to_state_machine():
 
     assert vm.state_machine.direction_results == []
     assert TravelDirection.UP in vm.state_machine.direction_queue
+
+
+def _make_test_video(path: Path, n_frames: int = 10, fps: float = 20.0) -> None:
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    writer = cv2.VideoWriter(str(path), fourcc, fps, (200, 150))
+    for _ in range(n_frames):
+        frame = np.zeros((150, 200, 3), dtype=np.uint8)
+        cv2.circle(frame, (100, 75), 10, (40, 160, 230), -1)
+        writer.write(frame)
+    writer.release()
+
+
+def test_load_simulation_video_swaps_camera_and_starts_paused():
+    """실장비 없이 녹화 영상으로 시험 절차를 검증하는 기능 - 영상을 선택하면 지금 카메라가
+    무엇이든(여기서는 MockCameraService) 멈추고 PlaybackCameraService로 교체되어야 하고,
+    작업자가 준비될 때까지 자동으로 재생되면 안 되므로 일시정지 상태로 시작해야 한다
+    (사용자 요청, 2026-09-15)."""
+    vm = _make_vm()
+    with tempfile.TemporaryDirectory() as tmp:
+        video_path = Path(tmp) / "sim.mp4"
+        _make_test_video(video_path)
+
+        vm.load_simulation_video(str(video_path))
+
+        assert isinstance(vm.camera, PlaybackCameraService)
+        assert vm.camera.is_paused
+        vm.camera.stop()
+        vm.camera.close()
+
+
+class _SpyCamera:
+    def __init__(self) -> None:
+        self.pause_calls = 0
+        self.resume_calls = 0
+        self.seek_calls: list[int] = []
+
+    def pause(self) -> None:
+        self.pause_calls += 1
+
+    def resume(self) -> None:
+        self.resume_calls += 1
+
+    def seek(self, frame_index: int) -> None:
+        self.seek_calls.append(frame_index)
+
+
+def test_play_pause_simulation_video_delegate_to_camera():
+    vm = _make_vm()
+    spy = _SpyCamera()
+    vm.camera = spy
+
+    vm.play_simulation_video()
+    vm.pause_simulation_video()
+
+    assert spy.resume_calls == 1
+    assert spy.pause_calls == 1
+
+
+def test_on_frame_passes_head_direction_hint_from_current_test_direction():
+    """RedDotDetector가 코멧테일 머리/꼬리 밝기가 애매할 때 무게중심 대신 쓸 방향 힌트
+    (사용자 제안, 2026-09-15) - 현재 시험 중인 방향(state_machine.current_direction)을
+    화면 픽셀 방향으로 변환해 detect()에 넘겨야 한다."""
+    vm = _make_vm()
+    vm.state_machine.current_direction = TravelDirection.UP
+
+    calls = []
+    original_detect = vm.detector.detect
+
+    def spy_detect(frame_bgr, roi_px=None, head_direction_hint_px=None):
+        calls.append(head_direction_hint_px)
+        return original_detect(frame_bgr, roi_px=roi_px, head_direction_hint_px=head_direction_hint_px)
+
+    vm.detector.detect = spy_detect
+    vm._on_frame(_make_dot_frame((50, 50)))
+
+    assert calls[0] == (0.0, -1.0)  # 상(UP) -> 픽셀 -y
+
+
+def test_debug_logging_off_by_default_prints_nothing_on_frame(capsys):
+    vm = _make_vm()
+    vm._on_frame(_make_dot_frame((50, 50)))
+    assert capsys.readouterr().out == ""
+
+
+def test_debug_logging_prints_detection_outcome_when_enabled(capsys):
+    """레드닷을 못 찾는 상황을 실제 시험 중 진단하기 위한 로그(사용자 요청, 2026-09-15) -
+    켜면 RedDotDetector의 [detect] 후보 로그에 이어 최종 판단([detect] 결과)까지 남아야
+    한다."""
+    vm = _make_vm()
+    vm.settings.detection.debug_logging = True
+
+    vm._on_frame(_make_dot_frame((50, 50)))
+
+    out = capsys.readouterr().out
+    assert "[detect] 결과: 검출 성공" in out
+
+
+def test_seek_simulation_video_delegates_to_camera():
+    """재생/일시정지 버튼만으로는 특정 지점을 찾아가기 번거롭다는 요청(2026-09-15)에
+    따른 프로그레스바 탐색 기능."""
+    vm = _make_vm()
+    spy = _SpyCamera()
+    vm.camera = spy
+
+    vm.seek_simulation_video(42)
+
+    assert spy.seek_calls == [42]
+
+
+def test_avg_frame_processing_ms_starts_none_then_becomes_positive_after_frames():
+    vm = _make_vm()
+    assert vm.avg_frame_processing_ms is None
+
+    vm._on_frame(_make_dot_frame((50, 50)))
+    vm._on_frame(_make_dot_frame((60, 60)))
+
+    assert vm.avg_frame_processing_ms is not None
+    assert vm.avg_frame_processing_ms >= 0.0

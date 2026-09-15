@@ -1,4 +1,5 @@
 import math
+import time
 
 import numpy as np
 import cv2
@@ -91,10 +92,16 @@ def _make_comet_tail_frame(
 ):
     """35MOA 근처에서 실측된 "코멧테일"(밝은 머리 + 중심 반대쪽으로 흐려지는 꼬리) 형태를
     흉내낸 합성 이미지 - 머리는 밝고(V=230) 꼬리는 점점 어두워짐(V가 130까지 내려감,
-    HSV 임계값 하한(120)보다는 위라 여전히 같은 마스크에 포함됨)."""
+    HSV 임계값 하한(120)보다는 위라 여전히 같은 마스크에 포함됨).
+
+    꼬리 조각을 먼저 그리고 머리를 마지막에(맨 위에) 그린다 - 순서가 반대(머리 먼저)면
+    머리와 가까운 꼬리 조각이 머리 가장자리를 덮어써서 실제로는 있을 수 없는(빛이 점점
+    밝아지는 진짜 머리를 도로 어둡게 만드는) 인공적인 결함이 생긴다(2026-09-15, 슬라이딩
+    원 스캔 도입 후 회귀 테스트로 발견 - _fit_head_square가 그 덮어써진 가장자리 때문에
+    실제보다 약간 옆쪽을 "가장 밝은 위치"로 잘못 골랐음). 실제 광학적으로는 진짜 LED
+    코어가 주변 번짐보다 항상 더 밝게 보이므로, 머리를 맨 위에 그리는 쪽이 더 현실적이다."""
     frame = np.zeros((height, width, 3), dtype=np.uint8)
     frame[..., 1] = 60
-    cv2.circle(frame, head_center, head_radius, _hsv_to_bgr(20, 200, 230), -1)
     hx, hy = head_center
     for i in range(1, n_segments + 1):
         frac = i / n_segments
@@ -102,6 +109,7 @@ def _make_comet_tail_frame(
         px = int(hx + tail_dx * frac * tail_len)
         r = max(1, int(6 * (1 - frac * 0.7)))
         cv2.circle(frame, (px, hy), r, _hsv_to_bgr(20, 200, v), -1)
+    cv2.circle(frame, head_center, head_radius, _hsv_to_bgr(20, 200, 230), -1)
     return frame
 
 
@@ -204,12 +212,73 @@ def test_elongated_but_uniform_brightness_blob_also_falls_back_to_centroid():
     assert result.core_circle is None  # 밝기 차이가 애매해 확신 부족 -> 무게중심 폴백
 
 
+def _uniform_elongated_frame():
+    """밝기로 머리/꼬리를 구분할 수 없는 길쭉한 블롭(위 테스트와 동일한 bbox: x 192~208,
+    y 132~168 -> w=16, h=36, side=16, length=36) - 진행방향 힌트 기반 보정을 검증하는 데
+    재사용한다."""
+    frame = np.zeros((300, 400, 3), dtype=np.uint8)
+    frame[..., 1] = 60
+    cv2.rectangle(frame, (192, 132), (208, 150), _hsv_to_bgr(20, 200, 205), -1)
+    cv2.rectangle(frame, (192, 150), (208, 168), _hsv_to_bgr(20, 200, 195), -1)
+    return frame
+
+
+def test_head_direction_hint_currently_has_no_effect_shift_disabled():
+    """방향 힌트로 반지름만큼 이동시키는 보정은 일단 뺐다(사용자 요청, 2026-09-15) -
+    슬라이딩 원 방식 자체의 정확도를 먼저 방향 힌트 없이 검증하기 위함. 힌트를 줘도
+    아직은 아무 영향이 없어야 한다(파라미터/전달 경로는 나중에 다시 켤 수 있게 남겨둠)."""
+    frame = _uniform_elongated_frame()
+    detector = RedDotDetector(DetectionSettings())
+
+    with_hint = detector.detect_best(frame, head_direction_hint_px=(0.0, -1.0))
+    without_hint = detector.detect_best(frame)
+
+    assert with_hint.found and without_hint.found
+    assert with_hint.core_circle is None
+    assert without_hint.core_circle is None
+
+
 def test_no_dot_returns_not_found():
     frame = np.zeros((300, 400, 3), dtype=np.uint8)
     frame[..., 1] = 60
     detector = RedDotDetector(DetectionSettings())
     result = detector.detect_best(frame)
     assert not result.found
+
+
+def test_debug_logging_off_by_default_prints_nothing(capsys):
+    frame = _make_frame(dot_center=(200, 150), dot_size=(8, 8))
+    detector = RedDotDetector(DetectionSettings())
+    detector.detect(frame)
+    assert capsys.readouterr().out == ""
+
+
+def test_debug_logging_prints_reason_for_rejected_and_accepted_candidates(capsys):
+    """레드닷을 못 찾는 상황을 실제 시험 중 진단하기 위한 로그(사용자 요청, 2026-09-15) -
+    켜면 채택된 후보는 물론, 면적/원형도/밝기 중 무엇 때문에 제외됐는지도 남아야 한다."""
+    frame = np.zeros((300, 400, 3), dtype=np.uint8)
+    frame[..., 1] = 60
+    cv2.circle(frame, (100, 150), 13, (40, 160, 230), -1)  # 진짜 원(채택돼야 함)
+    # 십자 모양(비원형이라 원형도에서 제외돼야 함)
+    cv2.rectangle(frame, (225, 145), (375, 155), (40, 160, 230), -1)
+    cv2.rectangle(frame, (295, 75), (305, 225), (40, 160, 230), -1)
+
+    detector = RedDotDetector(DetectionSettings(debug_logging=True))
+    detector.detect(frame)
+
+    out = capsys.readouterr().out
+    assert "[detect] 후보:" in out
+    assert "[detect] 제외(비원형)" in out
+
+
+def test_debug_logging_reports_no_candidates_found(capsys):
+    frame = np.zeros((300, 400, 3), dtype=np.uint8)
+    frame[..., 1] = 60
+    detector = RedDotDetector(DetectionSettings(debug_logging=True))
+    detector.detect(frame)
+
+    out = capsys.readouterr().out
+    assert "[detect] 후보 없음" in out
 
 
 def test_blob_tracker_picks_nearest_to_previous():
@@ -295,5 +364,38 @@ def test_blob_tracker_rejects_jump_beyond_max():
     tracker.select(detector.detect(frame1))
 
     frame2 = _make_frame(dot_center=(300, 250))  # 너무 멀리 뜀 (실제로는 불가능한 이동)
+    r2 = tracker.select(detector.detect(frame2))
+    assert not r2.found
+
+
+def test_blob_tracker_accepts_jump_after_reference_goes_stale():
+    """영상 탐색(seek)처럼 조작에 실제 시간이 걸리는 불연속 상황에서, 한참 전 위치를
+    기준으로 "너무 멀리 이동"이라며 계속 거부하면 안 된다 - max_reference_age_s(여기선
+    테스트를 빠르게 하려고 아주 짧게 설정)가 지나면 다음 검출은 첫 프레임처럼(게이팅
+    없이) 받아들여야 한다(사용자 요청, 2026-09-15)."""
+    detector = RedDotDetector(DetectionSettings())
+    tracker = BlobTracker(max_jump_px=10, max_reference_age_s=0.05)
+
+    frame1 = _make_frame(dot_center=(100, 100))
+    tracker.select(detector.detect(frame1))
+
+    time.sleep(0.1)  # max_reference_age_s(0.05s)보다 오래 대기
+
+    frame2 = _make_frame(dot_center=(300, 250))  # 게이팅만 있었다면 거부됐을 큰 점프
+    r2 = tracker.select(detector.detect(frame2))
+    assert r2.found
+    assert abs(r2.center_px[0] - 300) < 2
+
+
+def test_blob_tracker_still_gates_jump_within_reference_age():
+    """max_reference_age_s 이내라면 기존처럼 게이팅이 그대로 적용돼야 한다(회귀 확인용) -
+    시간 창을 넣었다고 정상적인 연속성 게이팅 자체가 느슨해지면 안 된다."""
+    detector = RedDotDetector(DetectionSettings())
+    tracker = BlobTracker(max_jump_px=10, max_reference_age_s=5.0)
+
+    frame1 = _make_frame(dot_center=(100, 100))
+    tracker.select(detector.detect(frame1))
+
+    frame2 = _make_frame(dot_center=(300, 250))
     r2 = tracker.select(detector.detect(frame2))
     assert not r2.found

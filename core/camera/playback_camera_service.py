@@ -90,6 +90,30 @@ class PlaybackCameraService(ICameraService):
         # "지금 몇 번째/무슨 파일인지" 확인할 수 있게 공개 속성으로 둔다.
         self.current_file: Path | None = None
 
+        # ---- video 모드 전용: 재생/일시정지 제어 + 프레임 카운터 + 프레임 스킵 ----
+        # 사용자가 재생 중인 영상을 직접 일시정지/재생하며 시험 절차(캘리브레이션, 판정
+        # 대기 등)를 실제 조작하듯 진행할 수 있게 하기 위함(사용자 요청, 2026-09-15).
+        # 기본은 set()(재생 상태) - 기존 --playback CLI 사용자의 자동 재생 동작을 그대로
+        # 유지하고, 새 시뮬레이션 UI 쪽에서만 로드 직후 명시적으로 pause()를 호출한다.
+        self._play_event = threading.Event()
+        self._play_event.set()
+        self.current_frame_index: int = 0
+        self.total_frame_count: int = 0
+        # 일시정지 중 계속 재전송할 마지막 프레임 - 실제 카메라라면 대상이 멈춰 있을 때도
+        # 같은 장면이 계속 스트리밍되는 것과 동일한 상황을 만들어, StabilityDetector 같은
+        # 시간 기반 안정성 판정이 재생 중과 동일하게 계속 동작하게 한다.
+        self._last_video_frame: np.ndarray | None = None
+        # 1이면 스킵 없음(기존 동작과 동일) - N이면 (N-1)프레임을 디코딩 없이 건너뛰고
+        # 매 N번째 프레임만 화면에 보여주고 분석한다(처리 속도가 영상 fps를 못 따라갈 때
+        # 실제 장비에서 벌어질 프레임 드롭을 시뮬레이션하기 위함).
+        self.frame_skip_interval: int = 1
+        # seek()가 재생 루프 스레드와 다른 스레드(UI)에서 cv2.VideoCapture를 동시에 건드리는
+        # 것을 막는다 - cv2.VideoCapture는 스레드 안전하지 않음. 재생/일시정지 버튼만으로는
+        # 특정 지점(예: 35MOA 근처)을 찾아가기 번거롭다는 요청(2026-09-15)에 따라 추가한
+        # 프로그레스바 탐색(seek) 기능이 필요로 함.
+        self._cap_lock = threading.Lock()
+        self._on_frame_callback: FrameCallback | None = None
+
     def open(self) -> CameraInfo:
         if not self.source_path.exists():
             raise FileNotFoundError(f"재생 소스를 찾을 수 없습니다: {self.source_path}")
@@ -126,6 +150,7 @@ class PlaybackCameraService(ICameraService):
         if self._running:
             return
         self._running = True
+        self._on_frame_callback = on_frame
 
         if self._mode == "folder":
             self._thread = threading.Thread(target=self._loop_folder, args=(on_frame,), daemon=True)
@@ -147,6 +172,7 @@ class PlaybackCameraService(ICameraService):
             self._cap.release()
             self._cap = None
         self._still_frame = None
+        self._last_video_frame = None
 
     def apply_settings(self, settings) -> None:  # noqa: ANN001 - 재생 소스는 카메라 파라미터 없음
         return None
@@ -157,6 +183,39 @@ class PlaybackCameraService(ICameraService):
     @property
     def is_running(self) -> bool:
         return self._running
+
+    # ---- video 모드 전용 재생 제어 ----
+    def pause(self) -> None:
+        """새 프레임을 읽지 않고 마지막 프레임을 계속 재전송하는 상태로 전환한다 -
+        폴더/정지 이미지 모드에는 영향 없음(그쪽 루프는 이 플래그를 보지 않음)."""
+        self._play_event.clear()
+
+    def resume(self) -> None:
+        self._play_event.set()
+
+    @property
+    def is_paused(self) -> bool:
+        return not self._play_event.is_set()
+
+    def seek(self, frame_index: int) -> None:
+        """재생 위치를 특정 프레임으로 직접 이동한다(프로그레스바 탐색) - 재생/일시정지
+        버튼만으로는 특정 지점(예: 35MOA 근처)을 찾아가기 번거롭다는 요청(2026-09-15)에
+        따른 기능. 일시정지 여부와 무관하게 즉시 그 프레임을 읽어 화면/검출 파이프라인에
+        반영한다 - 슬라이더를 움직이는 즉시 결과가 보여야 자연스럽기 때문. video 모드가
+        아니거나(아직) 프레임 수를 모르면 아무것도 하지 않는다."""
+        if self._cap is None or self.total_frame_count <= 0:
+            return
+        frame_index = max(0, min(frame_index, self.total_frame_count - 1))
+        with self._cap_lock:
+            self._cap.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
+            ok, frame = self._cap.read()
+            if ok:
+                self.current_frame_index = int(self._cap.get(cv2.CAP_PROP_POS_FRAMES))
+        if not ok:
+            return
+        self._last_video_frame = frame
+        if self._on_frame_callback is not None:
+            self._on_frame_callback(frame)
 
     # ---- 내부 재생 루프 ----
     def _loop_folder(self, on_frame: FrameCallback) -> None:
@@ -192,17 +251,50 @@ class PlaybackCameraService(ICameraService):
             time.sleep(period)
 
     def _loop_video(self, on_frame: FrameCallback) -> None:
+        """영상을 재생한다 - 일시정지/재생 제어, 프레임 카운터, 프레임 스킵을 지원한다
+        (pause/resume, current_frame_index/total_frame_count, frame_skip_interval 참고).
+        사용자가 실제 장비를 다루듯 재생을 멈추고 시험 절차를 진행할 수 있게 하기 위함
+        (사용자 요청, 2026-09-15)."""
         assert self._cap is not None
-        fps = self._cap.get(cv2.CAP_PROP_FPS) or self.fallback_fps
+        with self._cap_lock:
+            fps = self._cap.get(cv2.CAP_PROP_FPS) or self.fallback_fps
+            self.total_frame_count = int(self._cap.get(cv2.CAP_PROP_FRAME_COUNT))
         period = 1.0 / fps if fps > 0 else 1.0 / self.fallback_fps
 
         while self._running:
-            ok, frame = self._cap.read()
+            if not self._play_event.is_set():
+                # 일시정지 - 마지막 프레임을 그대로 재전송해서, 실제 카메라가 정지된
+                # 대상을 계속 찍고 있는 것과 동일한 리듬(같은 프레임 간격)을 유지한다.
+                # 그래야 StabilityDetector처럼 시간 기반으로 안정성을 판정하는 로직이
+                # 재생 중과 동일하게 계속 동작한다.
+                if self._last_video_frame is not None:
+                    on_frame(self._last_video_frame.copy())
+                time.sleep(period)
+                continue
+
+            # cap 접근 전체를 락으로 감싼다 - seek()가 다른 스레드(UI)에서 동시에
+            # cv2.VideoCapture를 건드릴 수 있어서(스레드 안전하지 않음).
+            with self._cap_lock:
+                # 건너뛸 프레임은 grab()만 호출해 디코딩 자체를 생략한다 - 화면에도 안
+                # 보이고 분석도 안 된다("분석되는 프레임 = 화면에 보이는 프레임"을 항상
+                # 일치시켜 오버레이가 안 바뀌는 혼란을 없애기 위함, 사용자 요청 2026-09-15).
+                for _ in range(max(0, self.frame_skip_interval - 1)):
+                    if not self._cap.grab():
+                        break
+
+                ok, frame = self._cap.read()
+                if ok:
+                    self.current_frame_index = int(self._cap.get(cv2.CAP_PROP_POS_FRAMES))
+                elif self.loop:
+                    self._cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+
             if not ok:
                 if self.loop:
-                    self._cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                    self.current_frame_index = 0
                     continue
                 self._running = False
                 break
+
+            self._last_video_frame = frame
             on_frame(frame)
-            time.sleep(period)
+            time.sleep(period * self.frame_skip_interval)

@@ -20,6 +20,7 @@ from app.views.live_feed_view import LiveFeedView
 from app.views.results_view import ResultsView
 from app.views.stage1_alignment_view import Stage1AlignmentView
 from app.views.stage2_travel_test_view import Stage2TravelTestView
+from app.views.video_simulation_view import VideoSimulationView
 
 
 class MainWindow(QMainWindow):
@@ -39,6 +40,7 @@ class MainWindow(QMainWindow):
         self.stage1_view = Stage1AlignmentView(self.vm.settings.stage1, on_ready_to_proceed=self._on_stage1_ready)
         self.stage1_view.set_calibration(self.vm.calibration)
         self.stage2_view = Stage2TravelTestView(self.vm)
+        self.video_simulation_view = VideoSimulationView(self.vm)
         self.results_view = ResultsView(repository) if repository is not None else None
 
         # "시험 진행" 탭: 부품 ID + 1단계 + 2단계를 한 곳에 (가장 자주 쓰는 화면이라 기본 탭)
@@ -55,6 +57,9 @@ class MainWindow(QMainWindow):
         separator = QFrame()
         separator.setFrameShape(QFrame.HLine)
         separator.setFrameShadow(QFrame.Sunken)
+        video_separator = QFrame()
+        video_separator.setFrameShape(QFrame.HLine)
+        video_separator.setFrameShadow(QFrame.Sunken)
 
         test_tab = QWidget()
         test_layout = QVBoxLayout(test_tab)
@@ -63,6 +68,11 @@ class MainWindow(QMainWindow):
         test_layout.addLayout(id_row)
         test_layout.addWidget(self.stage1_view)
         test_layout.addWidget(self.stage2_view)
+        test_layout.addWidget(video_separator)
+        test_layout.addWidget(self.video_simulation_view)
+        # 남는 세로 공간을 탭 맨 아래로만 모아 위쪽 내용(1/2단계, 종합 결과, 버튼들)이
+        # 빈 공간 없이 위로 붙어 보이게 한다(사용자 요청, 2026-09-15).
+        test_layout.addStretch(1)
 
         self.right_tabs = QTabWidget()
         self.right_tabs.addTab(test_tab, "시험 진행")

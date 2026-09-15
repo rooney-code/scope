@@ -13,12 +13,25 @@ from PySide6.QtCore import QObject, Signal
 from core.calibration.pixel_angle_calibration import PixelAngleCalibration
 from core.camera.camera_service import ICameraService
 from core.camera.frame_bus import FrameBus
+from core.camera.playback_camera_service import PlaybackCameraService
 from core.config.settings import Settings
 from core.inspection.models import InspectionSession, TravelDirection, Verdict
 from core.inspection.travel_test_state_machine import Phase, TravelTestStateMachine
 from core.tracking.position_sample import PositionSample
 from core.vision.blob_tracker import BlobTracker
 from core.vision.red_dot_detector import DetectionResult, RedDotDetector
+
+# 시험 방향(TravelDirection) -> 화면 픽셀 방향 힌트(부호만 의미 있음). "위(up)가 +Y"라는
+# 도메인 규약(PixelAngleCalibration.to_moa 참고: 화면 y는 아래로 증가하지만 위가 +Y이므로
+# 부호를 반전)에 따라 위 방향은 픽셀 y가 감소하는 쪽이다. RedDotDetector._fit_head_square가
+# 코멧테일의 머리/꼬리 밝기 차이가 애매할 때, 현재 시험 중인 방향으로 레드닷이 멀어지며
+# 늘어진다고 보고 무게중심을 그쪽으로 살짝 옮기는 데 쓴다(사용자 제안, 2026-09-15).
+_DIRECTION_TO_PIXEL_HINT: dict[TravelDirection, tuple[float, float]] = {
+    TravelDirection.UP: (0.0, -1.0),
+    TravelDirection.DOWN: (0.0, 1.0),
+    TravelDirection.LEFT: (-1.0, 0.0),
+    TravelDirection.RIGHT: (1.0, 0.0),
+}
 
 
 class InspectionViewModel(QObject):
@@ -41,11 +54,17 @@ class InspectionViewModel(QObject):
             max_jump_px=settings.detection.max_blob_jump_px,
             elongation_correction_threshold=settings.detection.elongation_correction_threshold,
             elongation_correction_blend=settings.detection.elongation_correction_blend,
+            max_reference_age_s=settings.detection.max_position_reference_age_s,
         )
         self.calibration = PixelAngleCalibration(mrad_to_moa_ratio=settings.calibration.mrad_to_moa_ratio)
         self.state_machine = TravelTestStateMachine(settings.stage2)
 
         self.scope_id: str | None = None
+        # 프레임당 처리(검출+상태기계) 시간의 지수이동평균(초) - 실장비 없이 녹화 영상으로
+        # 절차를 검증할 때, 처리 속도가 영상의 실제 fps를 못 따라가면 얼마나 못 따라가는지
+        # 화면에 보여주기 위함(사용자 요청, 2026-09-15). 이 값으로 자동으로 프레임을
+        # 건너뛰는 정책은 아직 만들지 않음 - 실측치를 보고 나서 결정하기로 함.
+        self._avg_processing_time_s: float | None = None
 
         self.frame_bus.subscribe(self._on_frame)
 
@@ -58,6 +77,41 @@ class InspectionViewModel(QObject):
     def stop_camera(self) -> None:
         self.camera.stop()
         self.camera.close()
+
+    def load_simulation_video(self, path: str) -> None:
+        """실장비 없이 녹화 영상(.avi 등)으로 시험 절차를 검증하기 위해, 지금 카메라가
+        무엇이든(실카메라/Mock/기존 재생) 멈추고 이 영상 기반 재생으로 교체한다. 로드
+        직후에는 일시정지 상태로 시작해 작업자가 준비된 뒤 직접 재생을 눌러야 한다
+        (사용자 요청, 2026-09-15)."""
+        self.stop_camera()
+        self.camera = PlaybackCameraService(path, loop=False)
+        self.camera.open()
+        self.camera.apply_settings(self.settings.camera)
+        self.camera.start(self.frame_bus.publish)
+        self.camera.pause()
+
+    def play_simulation_video(self) -> None:
+        if hasattr(self.camera, "resume"):
+            self.camera.resume()
+
+    def pause_simulation_video(self) -> None:
+        if hasattr(self.camera, "pause"):
+            self.camera.pause()
+
+    def seek_simulation_video(self, frame_index: int) -> None:
+        """재생 위치를 특정 프레임으로 직접 이동한다(프로그레스바 탐색) - 재생/일시정지
+        버튼만으로는 특정 지점을 찾아가기 번거롭다는 요청(2026-09-15)에 따른 기능.
+
+        BlobTracker가 참조하는 "직전 위치"는 일정 시간(기본 1초, BlobTracker.
+        max_reference_age_s)이 지나면 스스로 낡은 것으로 취급해 게이팅을 건너뛰므로
+        (탐색처럼 조작에 시간이 걸리는 불연속 상황을 자동으로 흡수함, 2026-09-15) 여기서
+        따로 트래커를 리셋하지 않는다."""
+        if hasattr(self.camera, "seek"):
+            self.camera.seek(frame_index)
+
+    @property
+    def avg_frame_processing_ms(self) -> float | None:
+        return None if self._avg_processing_time_s is None else self._avg_processing_time_s * 1000.0
 
     # ---- 시험 시작 게이트 ----
     def can_start_inspection(self) -> bool:
@@ -170,7 +224,11 @@ class InspectionViewModel(QObject):
                 profile.origin_px_y + half_h_px,
             )
 
-        candidates = self.detector.detect(frame_bgr, roi_px=roi_px)
+        # 프레임당 처리(검출~상태기계) 소요시간 측정 시작 - avg_frame_processing_ms 참고.
+        processing_start = time.perf_counter()
+
+        head_direction_hint_px = _DIRECTION_TO_PIXEL_HINT.get(self.state_machine.current_direction)
+        candidates = self.detector.detect(frame_bgr, roi_px=roi_px, head_direction_hint_px=head_direction_hint_px)
 
         out_of_range = False
         if not candidates and roi_px is not None:
@@ -179,7 +237,7 @@ class InspectionViewModel(QObject):
             # 그러려면 지금 레드닷이 어디 있는지부터 보여줘야 한다. 범위 안에서 못 찾으면
             # (밝기 기준은 동일하게 적용해) 전체 프레임에서 한 번 더 찾아본다(사용자 요청,
             # 2026-09-15).
-            candidates = self.detector.detect(frame_bgr, roi_px=None)
+            candidates = self.detector.detect(frame_bgr, roi_px=None, head_direction_hint_px=head_direction_hint_px)
             out_of_range = bool(candidates)
 
         if out_of_range:
@@ -199,6 +257,10 @@ class InspectionViewModel(QObject):
             )
         else:
             result = self.tracker.select(candidates)
+
+        if self.settings.detection.debug_logging:
+            self._log_frame_outcome(result, candidates, out_of_range)
+
         self.detection_ready.emit(result)
 
         # profile이 있어도 스케일(px_per_moa)이 자동 검출 직후의 임시값(1.0)일 수 있다 -
@@ -219,3 +281,27 @@ class InspectionViewModel(QObject):
             self.state_machine.feed_position(sample)
             if self.state_machine.phase != phase_before or len(self.state_machine.direction_results) != result_count_before:
                 self._after_state_change()
+
+        # 지수이동평균(alpha=0.2)으로 갱신 - 순간 튐(가비지 컬렉션 등)에 너무 민감하지
+        # 않으면서도 최근 추세를 빠르게 반영한다.
+        elapsed_s = time.perf_counter() - processing_start
+        if self._avg_processing_time_s is None:
+            self._avg_processing_time_s = elapsed_s
+        else:
+            self._avg_processing_time_s = 0.2 * elapsed_s + 0.8 * self._avg_processing_time_s
+
+    @staticmethod
+    def _log_frame_outcome(result: DetectionResult, candidates: list[DetectionResult], out_of_range: bool) -> None:
+        """이번 프레임에서 레드닷을 검출/미검출한 이유를 콘솔에 남긴다 - 실제 시험 중 레드닷을
+        못 찾는 상황이 발생해서(사용자 요청, 2026-09-15), RedDotDetector 자체의 후보별 제외
+        사유([detect] 로그, red_dot_detector.py 참고)에 이어 BlobTracker/범위 밖 폴백까지
+        포함한 최종 판단 이유를 보여준다. settings.detection.debug_logging이 켜져 있을 때만
+        호출된다."""
+        if out_of_range:
+            print(f"[detect] 결과: 범위 밖에서 발견 - center={result.center_px} (수동 조정 필요)")
+        elif result.found:
+            print(f"[detect] 결과: 검출 성공 center={result.center_px} area={result.area_px2:.0f}")
+        elif candidates:
+            print(f"[detect] 결과: 후보 {len(candidates)}개 있었지만 트래커가 거부(이전 위치에서 너무 멀리 이동)")
+        else:
+            print("[detect] 결과: 이번 프레임에서 후보 없음 (위 [detect] 제외 로그 참고)")

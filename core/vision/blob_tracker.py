@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import math
+import time
 from dataclasses import replace
 
 from core.vision.red_dot_detector import DetectionResult
@@ -27,16 +28,27 @@ class BlobTracker:
         max_jump_px: float = 60.0,
         elongation_correction_threshold: float = 1.5,
         elongation_correction_blend: float = 0.0,
+        max_reference_age_s: float = 1.0,
     ) -> None:
         self.max_jump_px = max_jump_px
         self.elongation_correction_threshold = elongation_correction_threshold
         self.elongation_correction_blend = elongation_correction_blend
+        # "직전 위치" 참조가 유효한 최대 경과 시간 - 이보다 오래되면 다음 select()가
+        # 첫 프레임처럼(게이팅 없이) 처리한다. 영상 탐색(seek)처럼 조작에 실제 시간이 걸리는
+        # 불연속 상황에서, 훨씬 이전(예: 되감기 전 위치)을 기준으로 "너무 멀리 이동"이라며
+        # 계속 거부하는 문제가 있었다(사용자 요청, 2026-09-15: "1초 정도만 참조하면
+        # 어떨까"). 일시정지 중에는 같은 프레임이 계속 재전송되며 매번 select()가 호출되어
+        # 시각이 갱신되므로, 아무리 오래 멈춰 있어도 낡은 것으로 취급되지 않는다 - 실제
+        # 불연속(탐색 등)에서만 자연스럽게 작동한다.
+        self.max_reference_age_s = max_reference_age_s
         self._last_raw_position: tuple[float, float] | None = None
         self._prev_raw_position: tuple[float, float] | None = None
+        self._last_seen_time: float | None = None
 
     def reset(self) -> None:
         self._last_raw_position = None
         self._prev_raw_position = None
+        self._last_seen_time = None
 
     def select(self, candidates: list[DetectionResult]) -> DetectionResult:
         """후보 목록에서 추적 대상을 선택한다.
@@ -50,10 +62,20 @@ class BlobTracker:
         if not candidates:
             return DetectionResult(found=False)
 
+        now = time.time()
+        if (
+            self._last_raw_position is not None
+            and self._last_seen_time is not None
+            and now - self._last_seen_time > self.max_reference_age_s
+        ):
+            self._last_raw_position = None
+            self._prev_raw_position = None
+
         if self._last_raw_position is None:
             best = candidates[0]  # detect()가 area 내림차순으로 정렬해서 줌
             self._prev_raw_position = None
             self._last_raw_position = best.center_px
+            self._last_seen_time = now
             return best
 
         lx, ly = self._last_raw_position
@@ -75,6 +97,7 @@ class BlobTracker:
         # 아니다(위 모듈 docstring 참고).
         self._prev_raw_position = self._last_raw_position
         self._last_raw_position = best_candidate.center_px
+        self._last_seen_time = now
         return result
 
     def _apply_motion_correction(self, candidate: DetectionResult) -> DetectionResult:
