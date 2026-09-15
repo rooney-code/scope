@@ -145,15 +145,68 @@ class InspectionViewModel(QObject):
         # 뷰모델이 프레임 자체를 가공하면 다른 모드에도 영향을 주게 되어 여기서는 순수 전달만 담당한다.
         self.frame_ready.emit(frame_bgr)
 
-        candidates = self.detector.detect(frame_bgr)
-        result: DetectionResult = self.tracker.select(candidates)
+        # 폴더 재생 모드(PlaybackCameraService)처럼 프레임끼리 시간적 연속성이 없는
+        # 소스는 매 프레임을 "새로 시작"으로 취급해야 한다 - BlobTracker.select()는
+        # 이전 프레임 위치에서 max_jump_px 이내인 블롭만 채택하는데, 서로 무관한 이미지들
+        # 사이에서는 레드닷 위치가 수백 px씩 "점프"해서 첫 프레임 이후로는 전부 거부되는
+        # 문제가 있었다(실측으로 확인, 2026-09-14).
+        if getattr(self.camera, "reset_tracker_each_frame", False):
+            self.tracker.reset()
+
+        # 캘리브레이션(원점+스케일)이 확정된 후에는 레드닷이 벗어날 수 없는 범위가 분명하므로
+        # 그 범위로만 검출을 제한한다 - 화면 먼 쪽의 문자/눈금 반사가 애초에 후보에서
+        # 제외되고, 처리할 픽셀 수도 줄어 프레임당 처리 시간이 준다(사용자 요청, 2026-09-14).
+        # 미확정 상태(원점 탐색 전 등)에서는 범위를 모르므로 전체 프레임을 그대로 검색한다.
+        roi_px = None
+        if self.calibration.is_ready:
+            profile = self.calibration.profile
+            margin_moa = self.settings.detection.roi_margin_moa
+            half_w_px = margin_moa * profile.px_per_moa_x
+            half_h_px = margin_moa * profile.px_per_moa_y
+            roi_px = (
+                profile.origin_px_x - half_w_px,
+                profile.origin_px_y - half_h_px,
+                profile.origin_px_x + half_w_px,
+                profile.origin_px_y + half_h_px,
+            )
+
+        candidates = self.detector.detect(frame_bgr, roi_px=roi_px)
+
+        out_of_range = False
+        if not candidates and roi_px is not None:
+            # 조립 상태에 따라 레드닷이 정상 이동 범위(roi_margin_moa) 밖에 있는 경우가
+            # 있다고 한다 - 이때는 사용자가 수동 조정으로 원점 쪽으로 가져와야 하는데,
+            # 그러려면 지금 레드닷이 어디 있는지부터 보여줘야 한다. 범위 안에서 못 찾으면
+            # (밝기 기준은 동일하게 적용해) 전체 프레임에서 한 번 더 찾아본다(사용자 요청,
+            # 2026-09-15).
+            candidates = self.detector.detect(frame_bgr, roi_px=None)
+            out_of_range = bool(candidates)
+
+        if out_of_range:
+            # 범위 밖 결과는 화면 표시 전용이다 - BlobTracker의 이전 위치 기반 연속성
+            # 게이팅이나 상태기계 이동량 판정에 섞이면 안 된다(조립 조정 중의 위치를 실제
+            # 시험 이동으로 오인하게 됨). area 내림차순으로 이미 정렬돼 있으므로 가장 큰
+            # 후보를 트래커를 거치지 않고 그대로 쓴다.
+            best = candidates[0]
+            result = DetectionResult(
+                found=True,
+                center_px=best.center_px,
+                ellipse=best.ellipse,
+                core_circle=best.core_circle,
+                contour=best.contour,
+                area_px2=best.area_px2,
+                out_of_range=True,
+            )
+        else:
+            result = self.tracker.select(candidates)
         self.detection_ready.emit(result)
 
         # profile이 있어도 스케일(px_per_moa)이 자동 검출 직후의 임시값(1.0)일 수 있다 -
         # is_ready(원점+x/y 스케일 모두 확정)가 아니면 to_moa() 결과가 터무니없는 값이 되어
         # state_machine에 잘못된 이동량/드리프트/쉬프트/백래쉬 판정을 유발할 수 있으므로
         # (실측으로 확인된 문제, 2026-09-14) 스케일 확정 전에는 아예 피드하지 않는다.
-        if result.found and self.calibration.is_ready:
+        # out_of_range 결과도 같은 이유로 피드하지 않는다(위 주석 참고).
+        if result.found and not result.out_of_range and self.calibration.is_ready:
             x_moa, y_moa = self.calibration.to_moa(result.center_px)
             sample = PositionSample(timestamp_s=time.time(), x_moa=x_moa, y_moa=y_moa)
 

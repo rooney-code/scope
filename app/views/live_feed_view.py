@@ -48,6 +48,10 @@ from core.vision.red_dot_detector import DetectionResult
 
 _ORIGIN_MARKER_COLOR_BGR = (255, 200, 0)  # 하늘색 계열 - 레드닷(빨강)과 구분되게
 _RED_DOT_MARKER_COLOR_BGR = (0, 0, 255)  # 레드닷 중심 표시: 빨간 점 하나
+# 정상 범위(roi_margin_moa) 밖에서 폴백 검색으로 찾은 레드닷 - 조립 상태에 따라 실제로
+# 발생할 수 있는 정상 상황이지만(사용자 요청, 2026-09-15), 정상 추적 중인 빨간 점과는
+# 뚜렷이 구분되는 색(주황)으로 표시해 "지금은 수동 조정이 필요한 상태"임을 알린다.
+_OUT_OF_RANGE_MARKER_COLOR_BGR = (0, 165, 255)
 
 
 class _ClickableImageLabel(QLabel):
@@ -305,7 +309,14 @@ class LiveFeedView(QWidget):
         raw_profile = self._calibration.profile if self._calibration is not None else None
         crop_profile = raw_profile if self._calibration_mode else profile
 
-        if self._is_cropped_view():
+        # 정상 범위 밖에서 찾은 레드닷(out_of_range)은 원점 기준 크롭 화면 밖에 있을 수
+        # 있다 - 크롭한 채로는 사용자가 조정에 필요한 위치를 아예 볼 수 없으므로, 이 상태인
+        # 동안은 원본 전체를 보여준다(사용자 요청, 2026-09-15).
+        out_of_range = detection is not None and detection.found and detection.out_of_range
+
+        if out_of_range and not self._calibration_mode:
+            display, transform = self._scale_to_display_size(frame_bgr)
+        elif self._is_cropped_view():
             display, transform = self._crop_and_resize_around_origin(frame_bgr, crop_profile)
         elif self._calibration_mode:
             # 원점이 아직 없거나(자동/수동 검출 전) 원점 지정 대기 상태(그리드 수동 검출
@@ -374,9 +385,13 @@ class LiveFeedView(QWidget):
         if show_guide_lines and dot_px_display is not None:
             display = draw_dot_guide_lines(display, dot_px_display)
 
-        # 레드닷: 검출된 중심점을 빨간 점 하나로만 표시
+        # 레드닷: 검출된 중심점을 점 하나로 표시 - 범위 밖 폴백 결과는 주황색으로 구분
         if show_red_dot and dot_px_display is not None:
-            cv2.circle(display, (int(round(dot_px_display[0])), int(round(dot_px_display[1]))), 4, _RED_DOT_MARKER_COLOR_BGR, -1)
+            dot_color = _OUT_OF_RANGE_MARKER_COLOR_BGR if out_of_range else _RED_DOT_MARKER_COLOR_BGR
+            cv2.circle(display, (int(round(dot_px_display[0])), int(round(dot_px_display[1]))), 6 if out_of_range else 4, dot_color, -1)
+
+        if out_of_range:
+            self._draw_out_of_range_banner(display)
 
         self._draw_offset_text(display, detection, profile, show_info_text)
 
@@ -391,6 +406,22 @@ class LiveFeedView(QWidget):
                 Qt.SmoothTransformation,  # 기본(FastTransformation, 최근접이웃)은 1px 안내선을
                 # 축소 과정에서 통째로 건너뛰어 사라지게 하는 경우가 있어 스무스 스케일링 사용
             )
+        )
+
+    def _draw_out_of_range_banner(self, display: np.ndarray) -> None:
+        """레드닷이 정상 범위 밖에서 폴백 검색으로 발견됐을 때 화면 상단에 경고 배너를
+        띄운다 - cv2.putText는 한글 글리프가 없어 깨지므로(_draw_offset_text와 동일한
+        이유) 영문 문구만 사용한다."""
+        text = "DOT OUT OF RANGE - ADJUST TO BRING IT BACK TO ORIGIN"
+        w = display.shape[1]
+        font_scale = max(0.7, w / 1600)
+        thickness = max(2, int(font_scale * 2))
+        (text_w, text_h), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, font_scale, thickness)
+        pad = 10
+        x = max(pad, (w - text_w) // 2)
+        cv2.rectangle(display, (x - pad, 0), (x + text_w + pad, text_h + 2 * pad), _OUT_OF_RANGE_MARKER_COLOR_BGR, -1)
+        cv2.putText(
+            display, text, (x, text_h + pad // 2 + 4), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (0, 0, 0), thickness
         )
 
     def _draw_offset_text(

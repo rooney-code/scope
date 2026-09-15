@@ -26,11 +26,13 @@ class IdsPeakNotAvailableError(RuntimeError):
 
 
 # CameraSettings 필드 이름 -> 실제 카메라 GenApi 노드 이름. apply_settings()/read_settings()가
-# 공유한다. 여기 없는 필드(auto_function_owner, digital_gain_r/g/b, wb_gain_r/g/b,
-# brightness_*, color_correction_*, saturation*, chromatic_adaption_*)는 계획 문서 단계의
-# 자리만 마련된 것으로, 카메라에 실제로 연동된 적이 없다(wb_gain_r/g/b는 애초에 이 카메라
-# NodeMap에 BalanceRatio 계열 노드가 없음을 실기로 확인함 - scripts/list_camera_nodes.py,
-# 2026-09-14) - read_settings()가 이런 필드들을 전부 "편집해도 소용없음"으로 표시한다.
+# 공유한다. 여기 없는 필드(auto_function_owner, digital_gain_r/g/b, brightness_*,
+# color_correction_*, saturation*, chromatic_adaption_*)는 계획 문서 단계의 자리만
+# 마련된 것으로, 카메라에 실제로 연동된 적이 없다 - read_settings()가 이런 필드들을
+# 전부 "편집해도 소용없음"으로 표시한다. wb_gain_r/g/b는 카메라 노드는 없지만(NodeMap에
+# BalanceRatio 계열 노드 자체가 없음을 실기로 확인함 - scripts/list_camera_nodes.py,
+# 2026-09-14) 호스트 측(ids_peak_ipl.Gain)에서 실제로 적용되므로 _HOST_SIDE_FIELDS로
+# 따로 표시해 "편집해도 소용없음" 취급에서 제외한다.
 _CAMERA_BACKED_FIELDS: dict[str, str] = {
     "frame_rate_fps": "AcquisitionFrameRate",
     "exposure_time_us": "ExposureTime",
@@ -42,6 +44,7 @@ _CAMERA_BACKED_FIELDS: dict[str, str] = {
     "auto_gain": "GainAuto",
     "auto_white_balance": "BalanceWhiteAuto",
 }
+_HOST_SIDE_FIELDS: set[str] = {"wb_gain_r", "wb_gain_g", "wb_gain_b"}
 
 
 class IdsPeakCameraService(ICameraService):
@@ -146,7 +149,8 @@ class IdsPeakCameraService(ICameraService):
         설정한 뒤 수동값을 써야 한다 - SDK가 Auto On 상태에서 수동값 설정을 무시/거부할 수 있음.
         정확한 노드명은 실기에서 NodeMap 탐색으로 검증 필요(TBD로 표시된 항목들). 단,
         wb_gain_r/g/b는 실기 확인 결과(scripts/list_camera_nodes.py) 이 카메라에 해당
-        노드 자체가 없어 호스트 측 구현이 필요함을 확인했다 - 아래 해당 줄 주석 참고.
+        카메라 노드 자체가 없어, 호스트 측(ids_peak_ipl.Gain)에서 대신 적용한다 - 아래
+        해당 줄 주석 및 _update_white_balance_gain() 참고.
 
         카메라가 이미 스트리밍 중(start() 호출 이후, 카메라 설정 화면의 "적용" 버튼처럼)이면
         TLParamsLocked=1 상태라 대부분의 노드가 잠겨 있어 그대로 쓰면 전부
@@ -239,9 +243,11 @@ class IdsPeakCameraService(ICameraService):
         # BalanceWhiteAuto 관련 노드만 있고 Ratio 계열 노드가 전혀 없다. 이 카메라는
         # R/G/B 화이트밸런스 게인을 카메라가 아니라 호스트(PC, ids_peak_ipl) 쪽에서
         # 처리하는 구조로 보인다(Cockpit "컬러" 패널의 "자동 기능: 호스트" 선택과 일치) -
-        # 카메라 노드로 시도하면 항상 NOT_FOUND라 아예 시도하지 않는다. 호스트 측에서
-        # 실제로 게인을 적용하려면 _buffer_to_bgr()의 프레임 변환 단계에 곱해줘야 하는데,
-        # 아직 구현 안 됨(TBD) - 지금은 wb_gain_r/g/b 설정값이 화면에 반영되지 않는다.
+        # 카메라 노드로 시도하면 항상 NOT_FOUND라 아예 시도하지 않는다. 대신 호스트 측
+        # (소프트웨어)에서 ids_peak_ipl.Gain으로 캡처된 각 프레임에 직접 R/G/B 게인을
+        # 곱하는 방식으로 구현한다(_buffer_to_bgr()에서 실제 적용, _update_white_balance_gain
+        # 참고).
+        self._update_white_balance_gain(settings)
 
         if was_running:
             try:
@@ -252,8 +258,10 @@ class IdsPeakCameraService(ICameraService):
 
     def read_settings(self, base: CameraSettings) -> tuple[CameraSettings, set[str]]:
         """_CAMERA_BACKED_FIELDS에 있는 필드만 카메라의 현재 값으로 덮어쓴다 - 나머지
-        필드(계획 자리만 마련된 것들)는 base 값을 그대로 둔다. 두 번째 반환값은 "편집해도
-        소용없는" 필드 이름 집합: 연동 자체가 안 된 필드 + 연동은 됐지만 지금 상태에서
+        필드(계획 자리만 마련된 것들)는 base 값을 그대로 둔다. _HOST_SIDE_FIELDS(wb_gain_r/g/b)
+        는 카메라에서 읽어올 노드가 없어 base 값 그대로지만, 편집 자체는 의미가 있으므로
+        readonly로 표시하지 않는다. 두 번째 반환값은 "편집해도 소용없는" 필드 이름 집합:
+        카메라/호스트 어느 쪽에도 연동 안 된 필드 + 카메라 연동은 됐지만 지금 상태에서
         NotImplemented/NotAvailable/ReadOnly인 필드."""
         nm = self._nodemap
         if nm is None:
@@ -261,7 +269,11 @@ class IdsPeakCameraService(ICameraService):
         peak = self._peak
 
         result = replace(base)
-        read_only = {f.name for f in fields(CameraSettings) if f.name not in _CAMERA_BACKED_FIELDS}
+        read_only = {
+            f.name
+            for f in fields(CameraSettings)
+            if f.name not in _CAMERA_BACKED_FIELDS and f.name not in _HOST_SIDE_FIELDS
+        }
 
         for field_name, node_name in _CAMERA_BACKED_FIELDS.items():
             try:
@@ -289,13 +301,6 @@ class IdsPeakCameraService(ICameraService):
                 read_only.add(field_name)
 
         return result, read_only
-
-        # 3) 화이트밸런스 R/G/B 게인 - 호스트 측(소프트웨어) 적용
-        # 위 BalanceRatio 노드 시도는 이 카메라(U3-388xLE-C) 모델에는 그 노드 자체가 없어
-        # 항상 실패 로그만 남긴다(실기 확인 사항 - docs/windows_setup_guide.md 참고). 카메라가
-        # 이 기능을 지원하지 않으므로, ids_peak_ipl.Gain으로 캡처된 각 프레임에 직접 R/G/B
-        # 게인을 곱하는 방식으로 대신 구현한다(_buffer_to_bgr()에서 실제 적용).
-        self._update_white_balance_gain(settings)
 
     def _update_white_balance_gain(self, settings: CameraSettings) -> None:
         """ids_peak_ipl.Gain은 채널별 유효 범위가 있고(실측: 1.0~8.0 - 1.0 미만으로는

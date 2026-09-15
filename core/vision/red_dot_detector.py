@@ -29,18 +29,43 @@ class DetectionResult:
     core_circle: tuple[tuple[float, float], float] | None = None
     contour: np.ndarray | None = None
     area_px2: float = 0.0
+    # True면 이 결과가 정상 검출 범위(원점 기준 roi_margin_moa) 안이 아니라 전체 프레임
+    # 폴백 검색으로 찾은 것 - 조립 상태에 따라 레드닷이 정상 이동 범위 밖에 있을 수 있어,
+    # 사용자가 수동 조정으로 원점 쪽으로 가져오는 걸 돕기 위한 화면 표시 전용 결과다.
+    # BlobTracker 연속성 추적이나 TravelTestStateMachine 이동량 판정에는 쓰면 안 된다
+    # (InspectionViewModel._on_frame 참고, 사용자 요청 2026-09-15).
+    out_of_range: bool = False
 
 
 class RedDotDetector:
     def __init__(self, settings: DetectionSettings | None = None) -> None:
         self.settings = settings or DetectionSettings()
 
-    def detect(self, frame_bgr: np.ndarray) -> list[DetectionResult]:
+    def detect(
+        self, frame_bgr: np.ndarray, roi_px: tuple[float, float, float, float] | None = None
+    ) -> list[DetectionResult]:
         """프레임에서 후보 블롭을 모두 검출해 반환한다 (여러 개일 수 있음).
 
         여러 후보 중 실제 추적 대상을 고르는 것은 BlobTracker의 책임이다.
+
+        roi_px: (x0, y0, x1, y1) 원본 프레임 좌표 기준 검출 영역 제한 - 캘리브레이션이
+        확정되면 레드닷이 벗어날 수 없는 범위가 명확해지므로(호출부 참고), 그 영역
+        밖은 아예 스캔하지 않는다. 반환되는 좌표/윤곽선은 모두 원본 프레임 좌표계로
+        다시 변환되므로 호출부는 roi 유무를 신경 쓸 필요가 없다.
         """
-        hsv = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2HSV)
+        offset_x, offset_y = 0, 0
+        search_frame = frame_bgr
+        if roi_px is not None:
+            fh, fw = frame_bgr.shape[:2]
+            x0 = max(0, int(round(roi_px[0])))
+            y0 = max(0, int(round(roi_px[1])))
+            x1 = min(fw, int(round(roi_px[2])))
+            y1 = min(fh, int(round(roi_px[3])))
+            if x1 > x0 and y1 > y0:
+                search_frame = frame_bgr[y0:y1, x0:x1]
+                offset_x, offset_y = x0, y0
+
+        hsv = cv2.cvtColor(search_frame, cv2.COLOR_BGR2HSV)
 
         s = self.settings
         mask1 = cv2.inRange(hsv, np.array(s.hsv_lower1), np.array(s.hsv_upper1))
@@ -57,7 +82,25 @@ class RedDotDetector:
         results: list[DetectionResult] = []
         for contour in contours:
             area = cv2.contourArea(contour)
-            if area < s.min_blob_area:
+            if area < s.min_blob_area or area > s.max_blob_area:
+                continue
+
+            perimeter = cv2.arcLength(contour, True)
+            circularity = (4 * np.pi * area / (perimeter**2)) if perimeter > 0 else 0.0
+            if circularity < s.min_circularity:
+                continue
+
+            # 면적/원형도만으로 못 걸러낸 가짜 후보(문자/눈금 반사)를 피크 밝기로 추가 검증한다
+            # - 실측으로 확인된 매우 뚜렷한 구분 기준(진짜 LED peak_v=255 vs 가짜 peak_v=2,
+            # DetectionSettings.min_peak_brightness 참고). 이후 로직에서도 재사용하므로 먼저
+            # 계산해둔다.
+            bx, by, bw, bh = cv2.boundingRect(contour)
+            local_mask = np.zeros((bh, bw), dtype=np.uint8)
+            cv2.drawContours(local_mask, [contour], -1, 255, thickness=cv2.FILLED, offset=(-bx, -by))
+            local_mask = cv2.bitwise_and(local_mask, mask[by : by + bh, bx : bx + bw])
+            seg_v = value_channel[by : by + bh, bx : bx + bw]
+            peak_v = int(seg_v[local_mask > 0].max()) if (local_mask > 0).any() else 0
+            if peak_v < s.min_peak_brightness:
                 continue
 
             moments = cv2.moments(contour)
@@ -79,6 +122,18 @@ class RedDotDetector:
                 center = self._intensity_weighted_centroid(contour, mask, value_channel, s.centroid_intensity_power)
                 if center is None:
                     center = (moments["m10"] / moments["m00"], moments["m01"] / moments["m00"])
+
+            # roi_px로 잘라낸 영역 안에서 계산했으므로, 반환 직전에 원본 프레임 좌표계로
+            # 되돌린다 - 호출부(BlobTracker/캘리브레이션 등)는 항상 원본 좌표만 다루면 된다.
+            if offset_x or offset_y:
+                center = (center[0] + offset_x, center[1] + offset_y)
+                contour = contour + (offset_x, offset_y)
+                if ellipse is not None:
+                    (ecx, ecy), esize, eangle = ellipse
+                    ellipse = ((ecx + offset_x, ecy + offset_y), esize, eangle)
+                if core_circle is not None:
+                    (ccx, ccy), cradius = core_circle
+                    core_circle = ((ccx + offset_x, ccy + offset_y), cradius)
 
             results.append(
                 DetectionResult(
@@ -136,9 +191,21 @@ class RedDotDetector:
         해당하므로, 바운딩박스를 그 폭 크기의 정사각형들로 나누면 각 정사각형이 대략
         "그 위치의 단면"을 나타내고, 가장 밝은 정사각형이 꼬리가 아닌 머리다. 절대/상대 밝기
         임계값을 튜닝할 필요가 없는 순수 기하학적 방법(사용자 제안, 2026-09-13).
+
+        단, 세로/가로 비율이 MIN_ELONGATION_RATIO(2.0) 미만이면(거의 원형에 가까움)
+        아예 적용하지 않고 None을 반환한다(호출부가 무게중심 계산으로 폴백) - 살짝만
+        길쭉한 거의-원형 블롭은 밝기가 두 조각 사이에 엇비슷해서, 조각을 나눠 비교하는
+        방식 자체가 노이즈에 취약해 오히려 안정적인 무게중심보다 못한(때로는 꼬리 쪽을
+        "머리"로 잘못 고르는) 결과를 내는 문제가 실측으로 확인됐다(2026-09-14: 세로/가로
+        36:24=1.5:1인 블롭에서 무게중심 y=447.3인데 이 로직은 y=457.0을 골라 10px 이상
+        어긋남). 뚜렷하게 길쭉한 진짜 코멧테일에서만 이 로직을 쓰도록 제한한다.
         """
         x, y, w, h = cv2.boundingRect(contour)
         if w <= 0 or h <= 0:
+            return None
+
+        MIN_ELONGATION_RATIO = 2.0
+        if max(w, h) / min(w, h) < MIN_ELONGATION_RATIO:
             return None
 
         side = min(w, h)
@@ -182,10 +249,24 @@ class RedDotDetector:
         # 그대로 선택된다.
         max_brightness = max(b for b, _ in segments)
         tolerance = max_brightness * 0.02
-        candidates = [c for b, c in segments if b >= max_brightness - tolerance]
+        winners = [c for b, c in segments if b >= max_brightness - tolerance]
+        losers_brightness = [b for b, _ in segments if b < max_brightness - tolerance]
+
+        # 세로/가로 비율 기준(호출부)만으로는 부족하다 - 뚜렷하게 길쭉해도 조각 간 밝기
+        # 차이가 애매하면(노이즈 수준) 여전히 엉뚱한 조각을 "머리"로 고를 수 있다(사용자
+        # 지적, 2026-09-14: 크기 기준만 바꾸면 우연히 또 잘못된 조각을 고르는 경우가
+        # 재발할 수 있음). 남은(밝지 않은) 조각들의 평균보다 승자가 충분히(15% 이상)
+        # 밝을 때만 신뢰하고, 그 정도 차이가 안 나면 확신이 부족하다고 보고 None을
+        # 반환해 호출부가 무게중심으로 폴백하게 한다.
+        MIN_HEAD_CONTRAST_RATIO = 0.15
+        if losers_brightness:
+            losers_avg = sum(losers_brightness) / len(losers_brightness)
+            if losers_avg <= 0 or max_brightness < losers_avg * (1 + MIN_HEAD_CONTRAST_RATIO):
+                return None
+
         best_center = (
-            sum(c[0] for c in candidates) / len(candidates),
-            sum(c[1] for c in candidates) / len(candidates),
+            sum(c[0] for c in winners) / len(winners),
+            sum(c[1] for c in winners) / len(winners),
         )
         return (best_center, side / 2.0)
 

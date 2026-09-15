@@ -29,7 +29,7 @@ def _build_camera(args: argparse.Namespace) -> ICameraService:
     if args.playback:
         from core.camera.playback_camera_service import PlaybackCameraService
 
-        return PlaybackCameraService(args.playback)
+        return PlaybackCameraService(args.playback, seconds_per_image=args.playback_interval)
 
     from core.camera.ids_peak_camera_service import IdsPeakCameraService
 
@@ -63,7 +63,18 @@ def _build_repository(settings: Settings, args: argparse.Namespace):
 def main() -> int:
     parser = argparse.ArgumentParser(description="조준경 불량 검사 프로그램")
     parser.add_argument("--mock", action="store_true", help="가상 카메라 사용 (하드웨어 없이 UI 개발/데모)")
-    parser.add_argument("--playback", type=str, default=None, help="정지 이미지/영상 파일을 카메라로 재생")
+    parser.add_argument(
+        "--playback",
+        type=str,
+        default=None,
+        help="정지 이미지/영상 파일 또는 이미지 폴더(파일명 순으로 몇 초씩 넘겨가며 재생)를 카메라로 재생",
+    )
+    parser.add_argument(
+        "--playback-interval",
+        type=float,
+        default=3.0,
+        help="--playback이 폴더일 때 이미지 한 장당 표시 시간(초). 작을수록 빨리 넘어감 (기본 3.0)",
+    )
     parser.add_argument("--device-serial", type=str, default=None, help="IDS 카메라 시리얼 번호")
     parser.add_argument(
         "--no-db", action="store_true", help="settings.json에 DB 설정이 있어도 연결하지 않음 (결과 저장/조회 없이 실행)"

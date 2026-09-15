@@ -53,11 +53,13 @@ _FIELD_LABELS_KO = {
     "brightness_tolerance": "허용 오차",
     "auto_white_balance": "자동 화이트 밸런스",
     # 이 카메라의 NodeMap에는 BalanceRatio 계열 노드가 없어(scripts/list_camera_nodes.py로
-    # 실기 확인, 2026-09-14) 카메라 쪽엔 적용되지 않는다 - 호스트 측(ids_peak_ipl) 구현
-    # 전까지는 값을 바꿔도 화면에 반영 안 됨을 라벨에 명시.
-    "wb_gain_r": "빨강 (미구현 - 호스트 처리 필요)",
-    "wb_gain_g": "초록 (미구현 - 호스트 처리 필요)",
-    "wb_gain_b": "파랑 (미구현 - 호스트 처리 필요)",
+    # 실기 확인, 2026-09-14) 카메라 쪽엔 적용 안 되지만, ids_peak_camera_service.py가
+    # ids_peak_ipl.Gain으로 호스트(PC) 측에서 직접 프레임에 게인을 곱하는 방식으로
+    # 구현되어 있다(_update_white_balance_gain/_apply_white_balance_gain 참고) - 실제로
+    # 반영되니 "빨강/초록/파랑"이 카메라의 다른 값들과 동일하게 정상 적용된다.
+    "wb_gain_r": "빨강",
+    "wb_gain_g": "초록",
+    "wb_gain_b": "파랑",
     "color_correction_host": "색상 보정 호스트",
     "color_correction_matrix_preset": "색상 보정 매트릭스",
     "saturation_enabled": "채도 사용",

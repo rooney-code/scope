@@ -25,6 +25,51 @@ def test_detects_circular_dot_near_center():
     assert abs(cy - 150) < 2
 
 
+def test_excludes_oversized_blob_from_candidates():
+    """실측 재생 영상에서 배경(초록 발광 영역) 전체가 HSV 임계값에 걸려 프레임의 2/3에
+    달하는 거대한 가짜 블롭이 검출되고, area 내림차순 정렬 때문에 진짜(작은) 레드닷보다
+    우선 선택되어 엉뚱한 고정 위치가 계속 선택되는 문제가 있었다(실측으로 확인,
+    2026-09-14: 1등 후보 면적이 4,323,714px2). max_blob_area로 이런 비정상적으로 큰
+    블롭은 후보에서 아예 제외해야 한다."""
+    frame = np.zeros((300, 400, 3), dtype=np.uint8)
+    frame[..., 1] = 60
+    # 프레임 상당 부분을 덮는 거대한 가짜 블롭(배경 오염 시뮬레이션) - 아래쪽에는 검은
+    # 여백을 남겨 진짜 레드닷(작은 원)과 서로 다른 윤곽선으로 분리되게 한다.
+    cv2.rectangle(frame, (5, 5), (395, 190), (40, 160, 230), -1)
+    # 실제 레드닷 크기의 작은 원 하나(위 블롭과 겹치지 않는 아래쪽)
+    cv2.circle(frame, (100, 250), 8, (40, 160, 230), -1)
+
+    detector = RedDotDetector(DetectionSettings())
+    candidates = detector.detect(frame)
+
+    assert all(c.area_px2 <= DetectionSettings().max_blob_area for c in candidates)
+    assert len(candidates) == 1  # 거대 블롭은 제외되고 작은 원만 후보로 남음
+    cx, cy = candidates[0].center_px
+    assert abs(cx - 100) < 2
+    assert abs(cy - 250) < 2
+
+
+def test_excludes_low_circularity_candidate_even_with_similar_area():
+    """면적만으로는 진짜 레드닷과 구분 안 되는 가짜 후보(그리드 문자/눈금 반사처럼
+    삐죽삐죽/길쭉한 모양)가 실측으로 확인됐다(2026-09-14: 진짜 522px2, 가짜 553px2로
+    거의 같은 면적이라 면적순 정렬만으로는 가짜가 이겼음). 원형도(circularity) 필터로
+    이런 비원형 후보를 걸러내야 한다."""
+    frame = np.zeros((300, 400, 3), dtype=np.uint8)
+    frame[..., 1] = 60
+    # 진짜 레드닷: 둥근 원
+    cv2.circle(frame, (100, 150), 13, (40, 160, 230), -1)
+    # 가짜 후보: 가늘고 긴 십자(+) 모양 - 원과 면적대는 비슷할 수 있어도 원형도가 훨씬 낮음
+    cv2.rectangle(frame, (225, 145), (375, 155), (40, 160, 230), -1)  # 가로 막대
+    cv2.rectangle(frame, (295, 75), (305, 225), (40, 160, 230), -1)  # 세로 막대
+
+    detector = RedDotDetector(DetectionSettings())
+    candidates = detector.detect(frame)
+
+    centers = [c.center_px for c in candidates]
+    assert any(abs(cx - 100) < 3 and abs(cy - 150) < 3 for cx, cy in centers)  # 진짜 원은 남아있어야 함
+    assert not any(200 < cx < 400 for cx, cy in centers)  # 십자 모양은 전부 제외돼야 함
+
+
 def test_detects_elliptical_dot_at_edge():
     frame = _make_frame(dot_center=(350, 50), dot_size=(12, 6))  # 타원형 왜곡 시뮬레이션
     detector = RedDotDetector(DetectionSettings())
@@ -95,11 +140,16 @@ def test_head_square_center_is_pulled_toward_bright_head_not_binary_centroid():
 def test_core_circle_is_round_even_when_ellipse_is_stretched_by_comet_tail():
     """core_circle은 꼬리를 뺀 밝은 "머리"만의 형상이므로, 꼬리가 길어질수록 늘어나는
     ellipse와 달리 꼬리 길이와 거의 무관하게 일정한 반지름을 유지해야 한다(실제 LED 광원
-    자체는 항상 원형이라는 물리적 사실과 일치 - docs/detection_notes.md 10차 참고)."""
+    자체는 항상 원형이라는 물리적 사실과 일치 - docs/detection_notes.md 10차 참고).
+
+    두 tail_len 모두 _fit_head_square의 최소 길쭉함 기준(세로/가로 2:1, 2026-09-14 추가 -
+    살짝만 길쭉한 거의-원형 블롭에 이 로직을 적용하면 밝기가 비슷한 두 조각 중 노이즈로
+    하나를 잘못 고르는 문제가 실측으로 확인됨)을 넘도록 길이를 잡는다 - 그래야 "짧은 꼬리
+    vs 긴 꼬리 모두 core_circle이 안정적"이라는 이 테스트의 취지가 유지된다."""
     detector = RedDotDetector(DetectionSettings())
 
-    short_tail = _make_comet_tail_frame(head_center=(200, 150), tail_len=5)
-    long_tail = _make_comet_tail_frame(head_center=(200, 150), tail_len=20)
+    short_tail = _make_comet_tail_frame(head_center=(200, 150), tail_len=25)
+    long_tail = _make_comet_tail_frame(head_center=(200, 150), tail_len=45)
 
     short_result = detector.detect_best(short_tail)
     long_result = detector.detect_best(long_tail)
@@ -115,6 +165,43 @@ def test_core_circle_is_round_even_when_ellipse_is_stretched_by_comet_tail():
     short_radius = short_result.core_circle[1]
     long_radius = long_result.core_circle[1]
     assert abs(long_radius - short_radius) < short_radius * 0.3
+
+
+def test_mildly_elongated_blob_skips_head_square_and_uses_centroid():
+    """세로/가로 비율이 2:1 미만인(거의 원형) 블롭은 _fit_head_square 대신 무게중심
+    계산으로 폴백해야 한다 - 실측 재생 영상에서 세로/가로 1.5:1인 블롭을 이 로직이
+    2조각으로 나눠 비교하다가, 거의 원형이라 밝기가 엇비슷한 두 조각 중 노이즈로 어두운
+    꼬리 쪽을 "머리"로 잘못 골라 무게중심(y=447.3)보다 10px 이상 어긋난 y=457.0을
+    내놓은 회귀에 대한 테스트(2026-09-14)."""
+    # tail_dx=0.3으로 약하게만 늘려 세로/가로 비율이 2:1 미만이 되게 한다.
+    frame = _make_comet_tail_frame(head_center=(200, 150), tail_dx=0.3, tail_len=8, n_segments=8)
+
+    detector = RedDotDetector(DetectionSettings())
+    result = detector.detect_best(frame)
+
+    assert result.found
+    assert result.core_circle is None  # 길쭉함 기준 미달로 head_square 적용 안 됨
+
+
+def test_elongated_but_uniform_brightness_blob_also_falls_back_to_centroid():
+    """세로/가로 비율이 2:1을 넘어도(길쭉함 기준은 통과), 조각 간 밝기 차이가 뚜렷하지
+    않으면(노이즈 수준) 여전히 head_square 결과를 신뢰하면 안 된다 - "크기 기준만 바꾸면
+    우연히 또 엉뚱한 조각을 고르는 경우가 재발하지 않겠냐"는 지적(2026-09-14)에 대한
+    회귀 테스트. 길쭉한 타원이지만 전체가 균일한 밝기라 진짜 코멧테일(뚜렷한 밝기 차이)이
+    아닌 경우를 흉내낸다."""
+    frame = np.zeros((300, 400, 3), dtype=np.uint8)
+    frame[..., 1] = 60
+    # 세로 36 / 가로 16 = 2.25:1로 길쭉함 기준(2.0)은 넘는 블롭을 위아래 두 조각으로
+    # 붙여 만들되, 밝기 차이를 5%(V=205 vs 195)로 아주 작게 둔다 - 2% 동률 허용치는
+    # 넘어서 한쪽이 "승자"가 되지만, 새로 추가한 15% 신뢰 기준에는 못 미치는 애매한 차이.
+    cv2.rectangle(frame, (192, 132), (208, 150), _hsv_to_bgr(20, 200, 205), -1)  # 위쪽(살짝 더 밝음)
+    cv2.rectangle(frame, (192, 150), (208, 168), _hsv_to_bgr(20, 200, 195), -1)  # 아래쪽
+
+    detector = RedDotDetector(DetectionSettings())
+    result = detector.detect_best(frame)
+
+    assert result.found
+    assert result.core_circle is None  # 밝기 차이가 애매해 확신 부족 -> 무게중심 폴백
 
 
 def test_no_dot_returns_not_found():

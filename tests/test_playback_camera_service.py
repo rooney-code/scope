@@ -65,6 +65,34 @@ def _make_test_video(path: Path, width=320, height=240, n_frames=20, fps=20.0):
     writer.release()
 
 
+def test_playback_folder_cycles_through_images_in_filename_order():
+    """실 장비 없이 여러 장의 실측 이미지를 순서대로 넘겨가며 확인하고 싶다는 요청
+    (2026-09-14) - 폴더를 넘기면 파일명 순으로 seconds_per_image 간격마다 다음 이미지로
+    넘어가야 하고, 끝까지 가면 처음부터 반복해야 한다."""
+    with tempfile.TemporaryDirectory() as tmp:
+        folder = Path(tmp)
+        # 파일명 순서와 다른 순서로 픽셀 마커를 심어서, 재생 순서가 알파벳순(파일명순)을
+        # 따르는지(디렉터리 생성 순서 등 다른 기준이 아니라) 검증한다.
+        markers = {"b_second.png": 2, "a_first.png": 1, "c_third.png": 3}
+        for name, marker in markers.items():
+            frame = np.zeros((20, 20, 3), dtype=np.uint8)
+            frame[0, 0] = [marker, marker, marker]
+            cv2.imwrite(str(folder / name), frame)
+
+        cam = PlaybackCameraService(folder, seconds_per_image=0.05)
+        info = cam.open()
+        assert "PLAYBACK" in info.device_id
+
+        received_markers = []
+        cam.start(lambda f: received_markers.append(int(f[0, 0, 0])))
+        time.sleep(0.22)  # 3장을 한 바퀴 돌고 다시 처음으로 넘어갈 정도의 시간
+        cam.stop()
+        cam.close()
+
+        assert received_markers[:3] == [1, 2, 3]  # a_first -> b_second -> c_third 순서
+        assert received_markers[3] == 1  # 끝까지 간 뒤 처음(a_first)으로 반복
+
+
 def test_playback_video_feeds_red_dot_detector_and_tracker():
     with tempfile.TemporaryDirectory() as tmp:
         video_path = Path(tmp) / "test_run.mp4"
