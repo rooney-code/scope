@@ -53,6 +53,10 @@ def test_update_white_balance_gain_clamps_out_of_range_value_instead_of_disablin
     assert service._wb_gain is not None  # 전체가 꺼지지 않음
     assert service._wb_gain.RedGainValue() == pytest.approx(1.5)
     assert service._wb_gain.BlueGainValue() == pytest.approx(1.0)  # 최소값으로 clamp됨
+    # clamp된 값이 settings에도 되써져야 한다 - 안 그러면 화면(UI)은 사용자가 입력한
+    # 원래 값(0.8)을 계속 보여주는데 실제 카메라엔 조정된 값(1.0)이 적용되어, 화면 값과
+    # 실제 적용값이 소리 없이 달라지는 문제가 있었다(사용자 지적, 2026-09-15).
+    assert settings.wb_gain_b == pytest.approx(1.0)
 
 
 def test_apply_white_balance_gain_changes_only_red_channel():
@@ -93,3 +97,68 @@ def test_apply_white_balance_gain_noop_when_gain_not_configured():
     service._apply_white_balance_gain(image)
 
     assert np.array_equal(image.get_numpy_2D(), before)
+
+
+def test_update_color_correction_builds_corrector_for_known_preset():
+    """color_correction_host가 "off"가 아니고 알려진 프리셋(hq)이면 ColorCorrector가
+    만들어져야 한다 - 사용자가 실기 Cockpit 화면에서 캡처해 알려준 실측 매트릭스값
+    (2026-09-15)을 쓴다."""
+    service = IdsPeakCameraService()
+    service._ipl = ipl
+    settings = CameraSettings(color_correction_host="on", color_correction_matrix_preset="HQ")
+
+    service._update_color_correction(settings)
+
+    assert service._color_corrector is not None
+
+
+def test_update_color_correction_off_clears_corrector():
+    service = IdsPeakCameraService()
+    service._ipl = ipl
+    service._update_color_correction(CameraSettings(color_correction_host="on", color_correction_matrix_preset="HQ"))
+    assert service._color_corrector is not None
+
+    service._update_color_correction(CameraSettings(color_correction_host="off"))
+
+    assert service._color_corrector is None
+
+
+def test_update_color_correction_unknown_preset_disables_instead_of_crashing():
+    """모르는 프리셋 이름이 들어와도 예외 없이, 보정 없이(안전하게) 진행해야 한다."""
+    service = IdsPeakCameraService()
+    service._ipl = ipl
+    settings = CameraSettings(color_correction_host="on", color_correction_matrix_preset="존재하지않는프리셋")
+
+    service._update_color_correction(settings)
+
+    assert service._color_corrector is None
+
+
+def test_apply_color_correction_changes_pixel_values_on_bgr_image():
+    """디베이어링된 컬러(BGR) 이미지에 색상 보정을 적용하면(비-항등 행렬이므로) 픽셀 값이
+    바뀌어야 한다 - raw Bayer 단계(Gain과 동일한 방식)가 아니라 ConvertTo() 이후에만
+    적용 가능함을 함께 확인(github.com/LDenninger/IDS-Peak-Python-Interface의
+    ColorCorrector 사용 패턴과 동일)."""
+    service = IdsPeakCameraService()
+    service._ipl = ipl
+    service._update_color_correction(CameraSettings(color_correction_host="on", color_correction_matrix_preset="HQ"))
+
+    bgr_image = _make_bayer_rg8_image().ConvertTo(ipl.PixelFormatName_BGR8)
+    before = bgr_image.get_numpy_3D().copy()
+
+    service._apply_color_correction(bgr_image)
+
+    assert not np.array_equal(bgr_image.get_numpy_3D(), before)
+
+
+def test_apply_color_correction_noop_when_not_configured():
+    """color_correction_host="off"(기본값)라 _color_corrector가 없으면 아무것도 하지
+    않아야 한다."""
+    service = IdsPeakCameraService()
+    service._ipl = ipl
+    bgr_image = _make_bayer_rg8_image().ConvertTo(ipl.PixelFormatName_BGR8)
+    before = bgr_image.get_numpy_3D().copy()
+
+    service._apply_color_correction(bgr_image)
+
+    assert np.array_equal(bgr_image.get_numpy_3D(), before)

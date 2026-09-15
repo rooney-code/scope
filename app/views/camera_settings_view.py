@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QFormLayout,
     QHBoxLayout,
+    QLabel,
     QLineEdit,
     QPushButton,
     QVBoxLayout,
@@ -17,6 +18,7 @@ from PySide6.QtWidgets import (
 )
 
 from core.camera.camera_service import ICameraService
+from core.camera.ids_peak_camera_service import _CAMERA_BACKED_FIELDS
 from core.config.settings import CameraSettings
 
 
@@ -71,6 +73,12 @@ _FIELD_LABELS_KO = {
 }
 
 
+def _section_label(text: str) -> QLabel:
+    label = QLabel(text)
+    label.setStyleSheet("font-weight: bold; margin-top: 8px;")
+    return label
+
+
 class CameraSettingsView(QWidget):
     def __init__(self, camera: ICameraService, settings: CameraSettings, parent=None) -> None:
         super().__init__(parent)
@@ -78,25 +86,33 @@ class CameraSettingsView(QWidget):
         self.settings = settings
         self._widgets: dict[str, QWidget] = {}
 
-        # CameraSettings 필드가 28개라 한 줄(QFormLayout 하나)로 쭉 펼치면 탭 하나가
-        # 800px+ 높이를 요구하게 된다 - QTabWidget은 "현재 보이는 탭"이 아니라 모든 탭
-        # 중 가장 큰 요구 크기로 창 전체의 최소 높이를 정하므로, 이 탭 때문에 FHD
-        # 모니터에서 창 자체가 화면보다 커져 레이아웃이 찌그러지는 문제가 있었다(실측으로
-        # 확인된 버그). 스크롤 영역으로 감쌌던 적도 있으나 매번 스크롤해야 해서 불편하다는
-        # 피드백이 있어(2026-09-14), 대신 필드를 반으로 나눠 2열로 배치해 필요 높이를
-        # 절반으로 줄인다.
+        # 필드를 소프트웨어(호스트 PC에서만 처리, 카메라 노드와 무관 - 위쪽)/하드웨어
+        # (실제 카메라 GenApi 노드에 쓰는 값 - 아래쪽) 두 그룹으로 나눈다. _CAMERA_BACKED_FIELDS
+        # 에 있는 필드만 실제 카메라 노드에 대응하고, 나머지는 전부 호스트 쪽(구현된 것은
+        # wb_gain_r/g/b뿐이고 나머지는 계획 단계 자리지만, 어느 쪽이든 카메라 노드가 아니므로
+        # 같은 그룹) - ids_peak_camera_service.py 상단 주석 참고. 소프트웨어 그룹은 적용
+        # 버튼 없이 값이 바뀌는 즉시 반영하고(카메라 스트리밍에 영향 없어 안전), 하드웨어
+        # 그룹은 기존처럼 "적용" 버튼을 눌러야 카메라에 반영된다 - 노드 쓰기는 스트리밍을
+        # 잠깐 멈춰야 해서(TLParamsLocked) 프레임 끊김이 생기므로 사용자가 값을 다 정한
+        # 뒤 명시적으로 눌러야 한다(사용자 요청, 2026-09-15).
         all_fields = list(fields(CameraSettings))
-        half = (len(all_fields) + 1) // 2
-        columns = QHBoxLayout()
-        for column_fields in (all_fields[:half], all_fields[half:]):
-            form = QFormLayout()
-            for f in column_fields:
-                widget = self._make_widget(f.name, getattr(settings, f.name))
-                self._widgets[f.name] = widget
-                form.addRow(_FIELD_LABELS_KO.get(f.name, f.name), widget)
-            columns.addLayout(form)
+        software_fields = [f for f in all_fields if f.name not in _CAMERA_BACKED_FIELDS]
+        hardware_fields = [f for f in all_fields if f.name in _CAMERA_BACKED_FIELDS]
 
-        apply_btn = QPushButton("적용 (카메라에 반영)")
+        layout = QVBoxLayout(self)
+
+        layout.addWidget(_section_label("소프트웨어 설정 (값 변경 시 즉시 적용)"))
+        layout.addLayout(self._build_columns(software_fields, settings))
+
+        layout.addWidget(_section_label("하드웨어 설정 (카메라 노드 - 적용 버튼 필요)"))
+        layout.addLayout(self._build_columns(hardware_fields, settings))
+
+        # 소프트웨어 그룹 위젯은 값이 바뀌는 즉시 camera.apply_host_settings()로 반영 -
+        # 카메라 노드/스트리밍을 건드리지 않는 가벼운 경로라 적용 버튼이 필요 없다.
+        for f in software_fields:
+            self._connect_instant_apply(f.name, self._widgets[f.name])
+
+        apply_btn = QPushButton("적용 (하드웨어 설정을 카메라에 반영)")
         apply_btn.clicked.connect(self._on_apply)
         restore_btn = QPushButton("기본값 복원")
         restore_btn.clicked.connect(self._on_restore_defaults)
@@ -106,12 +122,57 @@ class CameraSettingsView(QWidget):
         sync_btn = QPushButton("카메라에서 불러오기 (현재 편집값 무시)")
         sync_btn.clicked.connect(self.sync_from_camera)
 
-        layout = QVBoxLayout(self)
-        layout.addLayout(columns)
         layout.addWidget(apply_btn)
         layout.addWidget(restore_btn)
         layout.addWidget(sync_btn)
         layout.addStretch(1)
+
+    def _build_columns(self, group_fields: list, settings: CameraSettings) -> QHBoxLayout:
+        """필드 그룹을 2열로 배치 - CameraSettings 필드가 많아 한 줄로 쭉 펼치면 탭 하나가
+        800px+ 높이를 요구해 FHD 모니터에서 창이 화면보다 커지는 문제가 있었다(실측으로
+        확인된 버그, 2026-09-14). 소프트웨어/하드웨어 두 그룹 각각에 대해 이 배치를 쓴다."""
+        half = (len(group_fields) + 1) // 2
+        columns = QHBoxLayout()
+        for column_fields in (group_fields[:half], group_fields[half:]):
+            form = QFormLayout()
+            for f in column_fields:
+                widget = self._make_widget(f.name, getattr(settings, f.name))
+                self._widgets[f.name] = widget
+                form.addRow(_FIELD_LABELS_KO.get(f.name, f.name), widget)
+            columns.addLayout(form)
+        return columns
+
+    def _connect_instant_apply(self, name: str, widget: QWidget) -> None:
+        if isinstance(widget, QComboBox):
+            widget.currentTextChanged.connect(lambda _text, n=name: self._apply_software_field(n))
+        elif isinstance(widget, QCheckBox):
+            widget.toggled.connect(lambda _checked, n=name: self._apply_software_field(n))
+        elif isinstance(widget, QDoubleSpinBox):
+            widget.valueChanged.connect(lambda _value, n=name: self._apply_software_field(n))
+        elif isinstance(widget, QLineEdit):
+            # 텍스트 입력은 매 글자마다 반영하면 산만하므로 포커스를 벗어날 때(Enter 포함)만.
+            widget.editingFinished.connect(lambda n=name: self._apply_software_field(n))
+
+    def _apply_software_field(self, name: str) -> None:
+        current_default = getattr(self.settings, name)
+        new_value = self._read_widget(name, self._widgets[name], current_default)
+        setattr(self.settings, name, new_value)
+        self.camera.apply_host_settings(self.settings)
+
+        # apply_host_settings()가 유효 범위를 벗어난 값을 클램프해서 self.settings를
+        # 직접 고쳤을 수 있다(예: wb_gain_r/g/b - 실측 유효범위 1.0~8.0을 벗어나면 카메라
+        # 쪽에서 조정됨, ids_peak_camera_service._update_white_balance_gain 참고). 화면이
+        # 실제로 적용된 값과 다른 걸 계속 보여주면 안 되므로 위젯을 그 결과로 다시
+        # 맞춘다 - blockSignals로 감싸서 이 재동기화 자체가 또 apply를 유발하지 않게 한다
+        # (사용자 지적: UI 값과 실제 적용값이 소리 없이 달라지는 문제, 2026-09-15).
+        widget = self._widgets[name]
+        applied_value = getattr(self.settings, name)
+        if applied_value != new_value:
+            widget.blockSignals(True)
+            try:
+                self._set_widget_value(widget, applied_value)
+            finally:
+                widget.blockSignals(False)
 
     def _make_widget(self, name: str, value) -> QWidget:
         if name in _ON_OFF_FIELDS:
@@ -155,7 +216,11 @@ class CameraSettingsView(QWidget):
             widget.setText(str(value))
 
     def _on_apply(self) -> None:
+        """하드웨어(카메라 노드) 그룹만 대상 - 소프트웨어 그룹은 값이 바뀔 때 이미
+        즉시 반영돼 self.settings가 최신 상태이므로 여기서 다시 읽을 필요가 없다."""
         for f in fields(CameraSettings):
+            if f.name not in _CAMERA_BACKED_FIELDS:
+                continue
             current_default = getattr(self.settings, f.name)
             new_value = self._read_widget(f.name, self._widgets[f.name], current_default)
             setattr(self.settings, f.name, new_value)
@@ -167,6 +232,9 @@ class CameraSettingsView(QWidget):
             default_value = getattr(defaults, f.name)
             setattr(self.settings, f.name, default_value)
             self._set_widget_value(self._widgets[f.name], default_value)
+        # 소프트웨어 그룹은 즉시 적용이 원칙이므로 기본값 복원도 바로 반영한다 - 하드웨어
+        # 그룹은 기존과 동일하게 "적용" 버튼을 눌러야 카메라에 반영된다.
+        self.camera.apply_host_settings(self.settings)
 
     def sync_from_camera(self) -> None:
         """카메라의 현재 값을 읽어와 화면(및 self.settings)을 덮어쓴다 - 편집 중이던

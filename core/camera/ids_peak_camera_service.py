@@ -26,13 +26,13 @@ class IdsPeakNotAvailableError(RuntimeError):
 
 
 # CameraSettings 필드 이름 -> 실제 카메라 GenApi 노드 이름. apply_settings()/read_settings()가
-# 공유한다. 여기 없는 필드(auto_function_owner, digital_gain_r/g/b, brightness_*,
-# color_correction_*, saturation*, chromatic_adaption_*)는 계획 문서 단계의 자리만
-# 마련된 것으로, 카메라에 실제로 연동된 적이 없다 - read_settings()가 이런 필드들을
-# 전부 "편집해도 소용없음"으로 표시한다. wb_gain_r/g/b는 카메라 노드는 없지만(NodeMap에
-# BalanceRatio 계열 노드 자체가 없음을 실기로 확인함 - scripts/list_camera_nodes.py,
-# 2026-09-14) 호스트 측(ids_peak_ipl.Gain)에서 실제로 적용되므로 _HOST_SIDE_FIELDS로
-# 따로 표시해 "편집해도 소용없음" 취급에서 제외한다.
+# 공유한다. 여기 없는 필드(auto_function_owner, digital_gain_r/g/b, brightness_*, saturation*,
+# chromatic_adaption_*)는 계획 문서 단계의 자리만 마련된 것으로, 카메라에 실제로 연동된 적이
+# 없다 - read_settings()가 이런 필드들을 전부 "편집해도 소용없음"으로 표시한다. wb_gain_r/g/b와
+# color_correction_*는 카메라 노드는 없지만(wb_gain: NodeMap에 BalanceRatio 계열 노드 자체가
+# 없음을 실기로 확인함 - scripts/list_camera_nodes.py, 2026-09-14) 호스트 측
+# (ids_peak_ipl.Gain / ColorCorrector)에서 실제로 적용되므로 _HOST_SIDE_FIELDS로 따로 표시해
+# "편집해도 소용없음" 취급에서 제외한다.
 _CAMERA_BACKED_FIELDS: dict[str, str] = {
     "frame_rate_fps": "AcquisitionFrameRate",
     "exposure_time_us": "ExposureTime",
@@ -44,7 +44,22 @@ _CAMERA_BACKED_FIELDS: dict[str, str] = {
     "auto_gain": "GainAuto",
     "auto_white_balance": "BalanceWhiteAuto",
 }
-_HOST_SIDE_FIELDS: set[str] = {"wb_gain_r", "wb_gain_g", "wb_gain_b"}
+_HOST_SIDE_FIELDS: set[str] = {
+    "wb_gain_r",
+    "wb_gain_g",
+    "wb_gain_b",
+    "color_correction_host",
+    "color_correction_matrix_preset",
+}
+
+# IDS peak Cockpit의 "색상 보정 매트릭스" 프리셋별 3x3 계수 - 사용자가 실기(U3-388xLE-C)의
+# Cockpit "컬러" 패널에서 직접 캡처해 알려준 실측값이다(2026-09-15 스크린샷 참고, 색상 보정
+# 호스트=Auto, 매트릭스=HQ일 때 표시된 값). 행 순서는 [R,G,B]의 각 출력 채널이 입력 [R,G,B]를
+# 얼마나 섞을지(제3자 오픈소스 IDS peak 파이썬 래퍼 - github.com/LDenninger/
+# IDS-Peak-Python-Interface의 ColorCorrector 구현과 동일한 구조/순서로 확인).
+_COLOR_CORRECTION_PRESETS: dict[str, tuple[float, ...]] = {
+    "hq": (1.5508, -0.5586, 0.0078, -0.2227, 1.4180, -0.1953, 0.0625, -0.9141, 1.8477),
+}
 
 
 class IdsPeakCameraService(ICameraService):
@@ -61,6 +76,11 @@ class IdsPeakCameraService(ICameraService):
         # 없어(실기 확인 사항) apply_settings()가 ids_peak_ipl.Gain으로 만들어 채운다.
         # _buffer_to_bgr()에서 컬러 변환 전(raw Bayer/Mono 단계)에 적용된다.
         self._wb_gain = None
+        # 색상 보정 매트릭스(host-side, ids_peak_ipl.ColorCorrector) - Gain과 달리 R/G/B가
+        # 다 있어야 3x3 행렬 계산이 되므로 _buffer_to_bgr()에서 컬러 변환(디베이어링) *이후*에
+        # 적용한다(_apply_color_correction 참고). color_correction_host="off"면 None으로 둬서
+        # 아무 효과도 주지 않는다.
+        self._color_corrector = None
 
     # ---- ICameraService ----
     def open(self) -> CameraInfo:
@@ -248,6 +268,7 @@ class IdsPeakCameraService(ICameraService):
         # 곱하는 방식으로 구현한다(_buffer_to_bgr()에서 실제 적용, _update_white_balance_gain
         # 참고).
         self._update_white_balance_gain(settings)
+        self._update_color_correction(settings)
 
         if was_running:
             try:
@@ -255,6 +276,14 @@ class IdsPeakCameraService(ICameraService):
                 self._nodemap.FindNode("AcquisitionStart").Execute()
             except Exception as exc:  # noqa: BLE001
                 print(f"[camera] 설정 적용 후 재시작 실패: {exc}")
+
+    def apply_host_settings(self, settings: CameraSettings) -> None:
+        """호스트 측(_HOST_SIDE_FIELDS: wb_gain_r/g/b, color_correction_*)만 즉시 반영 -
+        카메라 노드/스트리밍은 건드리지 않으므로 apply_settings()와 달리 AcquisitionStop
+        없이 언제든 가볍게 호출할 수 있다(카메라 설정 화면의 "소프트웨어" 그룹 즉시 적용용,
+        ICameraService 참고)."""
+        self._update_white_balance_gain(settings)
+        self._update_color_correction(settings)
 
     def read_settings(self, base: CameraSettings) -> tuple[CameraSettings, set[str]]:
         """_CAMERA_BACKED_FIELDS에 있는 필드만 카메라의 현재 값으로 덮어쓴다 - 나머지
@@ -308,14 +337,24 @@ class IdsPeakCameraService(ICameraService):
         채널을 올려 상대적으로 맞추는 식으로 써야 함), 범위를 벗어난 값을 설정하면
         예외가 난다. 값 하나가 범위를 벗어났다고 화이트밸런스 전체를 꺼버리지 않도록
         각 채널을 유효 범위로 clamp한다 - docs/detection_notes.md 17차 참고.
+
+        clamp된 값을 settings에도 되써넣는다(설정 화면과 공유하는 같은 인스턴스) - 안
+        그러면 화면/self.settings는 사용자가 입력한 원래 값을 계속 들고 있는데 실제
+        카메라에는 조정된 값이 적용되어, UI에 보이는 값과 실제 적용값이 소리 없이
+        달라지는 문제가 있었다(콘솔 로그로만 경고, 화면엔 전혀 안 보임 - 사용자 지적,
+        2026-09-15). 호출부(CameraSettingsView._apply_software_field)가 이 값으로 위젯을
+        다시 동기화해 화면이 항상 실제 적용값을 보여주게 한다.
         """
         if self._ipl is None:
             return
         try:
             gain = self._ipl.Gain()
-            gain.SetRedGainValue(self._clamp_gain(settings.wb_gain_r, gain.RedGainMin(), gain.RedGainMax()))
-            gain.SetGreenGainValue(self._clamp_gain(settings.wb_gain_g, gain.GreenGainMin(), gain.GreenGainMax()))
-            gain.SetBlueGainValue(self._clamp_gain(settings.wb_gain_b, gain.BlueGainMin(), gain.BlueGainMax()))
+            settings.wb_gain_r = self._clamp_gain(settings.wb_gain_r, gain.RedGainMin(), gain.RedGainMax())
+            settings.wb_gain_g = self._clamp_gain(settings.wb_gain_g, gain.GreenGainMin(), gain.GreenGainMax())
+            settings.wb_gain_b = self._clamp_gain(settings.wb_gain_b, gain.BlueGainMin(), gain.BlueGainMax())
+            gain.SetRedGainValue(settings.wb_gain_r)
+            gain.SetGreenGainValue(settings.wb_gain_g)
+            gain.SetBlueGainValue(settings.wb_gain_b)
         except Exception as exc:  # noqa: BLE001 - 화이트밸런스 없이 계속 진행
             print(f"[camera] 화이트밸런스 게인 설정 실패: {exc}")
             self._wb_gain = None
@@ -355,6 +394,7 @@ class IdsPeakCameraService(ICameraService):
             )
             self._apply_white_balance_gain(raw_image)
             color_image = raw_image.ConvertTo(ipl.PixelFormatName_BGR8)
+            self._apply_color_correction(color_image)
             # 현재 ids_peak_ipl(1.17.x)의 Image 클래스에는 Data()가 없다 - 버퍼를 직접 numpy로
             # 받으려면 get_numpy_3D()(BGR8처럼 8bit/채널>1 포맷용)를 써야 한다.
             return color_image.get_numpy_3D().copy()
@@ -374,3 +414,43 @@ class IdsPeakCameraService(ICameraService):
         pixel_format_name = raw_image.PixelFormat().PixelFormatName()
         if self._wb_gain.IsPixelFormatSupported(pixel_format_name):
             self._wb_gain.ProcessInPlace(raw_image)
+
+    def _apply_color_correction(self, color_image) -> None:
+        """호스트 측 색상 보정 3x3 매트릭스를 컬러(BGR) 이미지에 in-place로 적용.
+
+        Gain과 달리 R/G/B 세 채널이 다 있어야 행렬 계산이 되므로, raw Bayer 단계가 아니라
+        ConvertTo() *이후*(디베이어링된 컬러 이미지)에 적용해야 한다 - 오픈소스 IDS peak
+        파이썬 래퍼(github.com/LDenninger/IDS-Peak-Python-Interface)의 ColorCorrector
+        사용 패턴과 동일. _color_corrector가 없으면(color_correction_host="off" 등)
+        아무것도 하지 않는다.
+        """
+        if self._color_corrector is None:
+            return
+        self._color_corrector.ProcessInPlace(color_image)
+
+    def _update_color_correction(self, settings: CameraSettings) -> None:
+        """color_correction_host가 "off"가 아니면 color_correction_matrix_preset에 맞는
+        3x3 매트릭스로 ColorCorrector를 (재)생성하고, "off"면 끈다(_color_corrector=None).
+
+        프리셋 이름은 대소문자 구분 없이 매칭한다 - settings.json/UI 값이 "HQ"처럼 대문자로
+        시작할 수 있어서다. 알 수 없는 프리셋이면 조용히 끈다(보정 없이 원본 그대로 - 잘못된
+        매트릭스를 적용해 색이 더 이상해지는 것보다 안전).
+        """
+        if self._ipl is None:
+            return
+        if settings.color_correction_host == "off":
+            self._color_corrector = None
+            return
+        matrix = _COLOR_CORRECTION_PRESETS.get(settings.color_correction_matrix_preset.lower())
+        if matrix is None:
+            print(f"[camera] 알 수 없는 색상 보정 프리셋: {settings.color_correction_matrix_preset!r} - 보정 없이 진행")
+            self._color_corrector = None
+            return
+        try:
+            corrector = self._ipl.ColorCorrector()
+            corrector.SetColorCorrectionFactors(self._ipl.ColorCorrectionFactors(*matrix))
+        except Exception as exc:  # noqa: BLE001 - 색상 보정 없이 계속 진행
+            print(f"[camera] 색상 보정 설정 실패: {exc}")
+            self._color_corrector = None
+            return
+        self._color_corrector = corrector

@@ -50,6 +50,18 @@ class ICameraService(ABC):
         수동값 설정을 무시/거부하는 경우가 있음 - docs 계획 참고).
         """
 
+    def apply_host_settings(self, settings: "CameraSettings") -> None:  # noqa: F821
+        """카메라 노드(하드웨어)에 손대지 않고, 호스트(PC) 쪽에서만 처리되는 필드(예:
+        화이트밸런스 R/G/B 게인)를 즉시 반영한다.
+
+        apply_settings()와 달리 스트리밍을 멈추거나(AcquisitionStop/TLParamsLocked) 카메라
+        노드에 쓰지 않으므로 호출 비용이 가볍고 프레임 끊김이 없다 - 카메라 설정 화면에서
+        "소프트웨어" 그룹 필드는 값이 바뀔 때마다 적용 버튼 없이 이 메서드로 바로 반영한다
+        (사용자 요청, 2026-09-15: 소프트웨어 쪽은 즉시 적용, 하드웨어 쪽만 적용 버튼 유지).
+        구현체가 호스트 측 효과가 없으면(Mock/Playback 등) 아무 일도 하지 않아도 된다.
+        """
+        return None
+
     @abstractmethod
     def read_settings(self, base: "CameraSettings") -> tuple["CameraSettings", set[str]]:  # noqa: F821
         """카메라의 현재 값을 읽어 base(보통 settings.json에서 불러온 이전 값)를 그
