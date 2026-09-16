@@ -13,3 +13,4 @@ scripts/token.json
 build/
 dist/
 *.spec.bak
+reports/

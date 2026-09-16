@@ -11,16 +11,20 @@
 """
 from __future__ import annotations
 
-from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QLineEdit, QMainWindow, QTabWidget, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QFrame, QHBoxLayout, QMainWindow, QTabWidget, QVBoxLayout, QWidget
 
 from app.viewmodels.inspection_viewmodel import InspectionViewModel
 from app.views.calibration_view import CalibrationView
 from app.views.camera_settings_view import CameraSettingsView
+from app.views.inspection_settings_view import InspectionSettingsView
 from app.views.live_feed_view import LiveFeedView
 from app.views.results_view import ResultsView
+from app.views.simulation_view import SimulationView
 from app.views.stage1_alignment_view import Stage1AlignmentView
 from app.views.stage2_travel_test_view import Stage2TravelTestView
 from app.views.video_simulation_view import VideoSimulationView
+from core.calibration.grid_auto_detector import GridDetectionResult
+from core.camera.mock_camera_service import MockCameraService
 
 
 class MainWindow(QMainWindow):
@@ -36,36 +40,59 @@ class MainWindow(QMainWindow):
         # "캘리브레이션" 탭에서 "불러오기"를 눌러야 했던 불편함에 대한 개선(사용자 요청,
         # 2026-09-14). 없으면 load_saved()가 기본 안내 메시지를 그대로 둔다.
         self.calibration_view.load_saved()
+
+        # 확대/오버레이 컨트롤을 "시험 진행" 탭에서 "캘리브레이션" 탭 맨 위로 옮긴다 - 확대는
+        # 원점을 클릭할 때(캘리브레이션 중)나 쓰고, 오버레이 표시는 시험 진행 중에 바꿀 일이
+        # 없다는 판단(사용자 요청, 2026-09-16). LiveFeedView.controls_widget은 애초에 밖에서
+        # 원하는 곳에 배치하도록 설계돼 있다(live_feed_view.py 참고).
+        controls_separator = QFrame()
+        controls_separator.setFrameShape(QFrame.HLine)
+        controls_separator.setFrameShadow(QFrame.Sunken)
+        calibration_layout = self.calibration_view.layout()
+        calibration_layout.insertWidget(0, self.live_feed_view.controls_widget)
+        calibration_layout.insertWidget(1, controls_separator)
         self.camera_settings_view = CameraSettingsView(self.vm.camera, self.vm.settings.camera)
-        self.stage1_view = Stage1AlignmentView(self.vm.settings.stage1, on_ready_to_proceed=self._on_stage1_ready)
+
+        # "검사 설정" 탭: 트래블 시험 판정값(목표 이동량/각종 임계값)과 정지 판정 대기시간을
+        # settings.json을 직접 열어 고치는 대신 프로그램 안에서 바꿀 수 있게 한다 - 카메라
+        # 설정과 같은 자리(탭)에 둔다(사용자 요청, 2026-09-16: "설정값은 사용자가 바꿔야
+        # 하는 부분이니 이 프로그램으로 해결하면 좋을것 같아").
+        self.inspection_settings_view = InspectionSettingsView(self.vm.settings)
+
+        # "시뮬레이션" 탭:가진 시험 영상만으로는 모든 케이스를 재현하기 힘들다는 요청
+        # (2026-09-16)에 따라, 실제 카메라와 완전히 독립된 MockCameraService(검은 배경 +
+        # 가상 레드닷)와 그 전용 InspectionViewModel을 둔다. settings는 실제 시험과 같은
+        # 객체를 공유해서(같은 임계값/절차) 시뮬레이션에서 확인한 절차가 실제 탭과 동일하게
+        # 동작함을 보장하되, 세션 상태(부품 ID/진행 중인 방향/결과)는 별도 상태기계라 서로
+        # 영향을 주지 않는다.
+        self.sim_camera = MockCameraService(render_style="simple")
+        self.sim_camera.open()
+        self.sim_vm = InspectionViewModel(self.sim_camera, self.vm.settings)
+        self.sim_vm.calibration.seed_from_auto_detection(
+            "SIMULATION", GridDetectionResult(found=True, origin_px=self.sim_camera.origin_px())
+        )
+        self.sim_vm.calibration.profile.px_per_moa_x = self.sim_camera.px_per_moa()
+        self.sim_vm.calibration.profile.px_per_moa_y = self.sim_camera.px_per_moa()
+        self.sim_vm.calibration.profile.scale_confirmed_x = True
+        self.sim_vm.calibration.profile.scale_confirmed_y = True
+        self.simulation_view = SimulationView(self.sim_vm, self.sim_camera)
+
+        self.stage1_view = Stage1AlignmentView()
         self.stage1_view.set_calibration(self.vm.calibration)
         self.stage2_view = Stage2TravelTestView(self.vm)
         self.video_simulation_view = VideoSimulationView(self.vm)
         self.results_view = ResultsView(repository) if repository is not None else None
 
-        # "시험 진행" 탭: 부품 ID + 1단계 + 2단계를 한 곳에 (가장 자주 쓰는 화면이라 기본 탭)
-        self.scope_id_input = QLineEdit()
-        self.scope_id_input.setPlaceholderText("예: SC-2026-04812 - 미입력 시 검사 시작 불가")
-        self.scope_id_input.textChanged.connect(self._on_scope_id_changed)
-        id_row = QHBoxLayout()
-        id_row.addWidget(QLabel("부품 ID:"))
-        id_row.addWidget(self.scope_id_input)
-
-        # 확대/오버레이 컨트롤(원래 영상 아래에 있었음)을 시험 진행 탭 맨 위로 옮겨 영상이
-        # 세로로 더 커질 수 있게 한다(사용자 피드백, 2026-09-14) - 구분선으로 컨트롤
-        # 영역과 시험 내용을 구분.
-        separator = QFrame()
-        separator.setFrameShape(QFrame.HLine)
-        separator.setFrameShadow(QFrame.Sunken)
+        # "시험 진행" 탭: 1단계(캘리브레이션 경고) + 2단계(부품 ID 입력 포함)를 한 곳에
+        # (가장 자주 쓰는 화면이라 기본 탭). 부품 ID 입력은 "시험 시작" 버튼과 한 화면
+        # (Stage2TravelTestView)에 있는 게 자연스러워 그쪽으로 옮겼다(사용자 요청,
+        # 2026-09-16 - 입력란 옆에 바로 시작 버튼을 두기 위함).
         video_separator = QFrame()
         video_separator.setFrameShape(QFrame.HLine)
         video_separator.setFrameShadow(QFrame.Sunken)
 
         test_tab = QWidget()
         test_layout = QVBoxLayout(test_tab)
-        test_layout.addWidget(self.live_feed_view.controls_widget)
-        test_layout.addWidget(separator)
-        test_layout.addLayout(id_row)
         test_layout.addWidget(self.stage1_view)
         test_layout.addWidget(self.stage2_view)
         test_layout.addWidget(video_separator)
@@ -78,20 +105,22 @@ class MainWindow(QMainWindow):
         self.right_tabs.addTab(test_tab, "시험 진행")
         self.right_tabs.addTab(self.calibration_view, "캘리브레이션")
         self.right_tabs.addTab(self.camera_settings_view, "카메라 설정")
+        self.right_tabs.addTab(self.inspection_settings_view, "검사 설정")
+        self.right_tabs.addTab(self.simulation_view, "시뮬레이션")
         if self.results_view is not None:
             self.right_tabs.addTab(self.results_view, "결과 조회")
         self.right_tabs.currentChanged.connect(self._on_right_tab_changed)
 
-        # 영상이 세로 높이에 맞춰 정사각으로 고정되므로(LiveFeedView._relayout_square_image),
-        # 우측 패널을 좁게 잡으면 영상 좌우로 놀고 있는 여백이 큼 - 그 여백을 우측 패널에
-        # 더 줘서(종합결과 표 등이 잘리지 않게) 활용한다. maximumWidth만 두면 QHBoxLayout이
-        # stretch=1인 영상 쪽에 남는 공간을 전부 몰아줘서 우측 패널이 실제로는 커지지
-        # 않으므로, setFixedWidth로 확실히 이 폭을 차지하게 한다(영상은 폭이 아니라 높이가
-        # 기준이라 우측 패널을 넓혀도 영상이 작아지지 않음).
-        self.right_tabs.setFixedWidth(700)
+        # 영상이 실제로 표시되는 최대 크기는 LiveFeedView._relayout_square_image의 960px
+        # 캡이 정한다 - live_feed_view 위젯 자체를 stretch=1로 두면 그보다 훨씬 넓은
+        # 컨테이너 안에서 영상이 가운데 작게 떠 좌우로 큰 공백이 생긴다(사용자 지적,
+        # 2026-09-16). 위젯 자체의 최대 폭을 그 캡에 맞춰 제한해서 컨테이너가 영상 크기로
+        # 줄어들게 하고, 남는 공간은 전부 우측 패널(종합결과 표 등)에 준다.
+        self.live_feed_view.setMaximumWidth(1000)
+        self.right_tabs.setFixedWidth(900)
         body = QHBoxLayout()
-        body.addWidget(self.live_feed_view, stretch=1)
-        body.addWidget(self.right_tabs, stretch=0)
+        body.addWidget(self.live_feed_view, stretch=0)
+        body.addWidget(self.right_tabs, stretch=1)
 
         central = QWidget()
         central.setLayout(body)
@@ -101,15 +130,15 @@ class MainWindow(QMainWindow):
         self.vm.frame_ready.connect(self.calibration_view.on_frame)
         self.vm.detection_ready.connect(self.live_feed_view.on_detection)
         self.vm.detection_ready.connect(self.stage1_view.on_detection)
+        self.vm.fps_stats_updated.connect(self.live_feed_view.on_fps_stats)
         self.live_feed_view.frame_clicked_px.connect(self.calibration_view.on_frame_clicked)
         self.calibration_view.origin_picking_changed.connect(self.live_feed_view.set_calibration_origin_picking)
 
-    def _on_scope_id_changed(self, text: str) -> None:
-        self.vm.set_scope_id(text)
-
-    def _on_stage1_ready(self) -> None:
-        pass  # 필요 시 2단계로 포커스 이동 등의 UX를 여기에 추가
-
     def _on_right_tab_changed(self, index: int) -> None:
-        is_calibration = self.right_tabs.widget(index) is self.calibration_view
+        current_widget = self.right_tabs.widget(index)
+        is_calibration = current_widget is self.calibration_view
         self.live_feed_view.set_calibration_mode(is_calibration)
+        # 시뮬레이션 탭을 보고 있을 때만 그 안의 주기적 스트리밍을 켠다 - 안 보이는 동안도
+        # 계속 돌면 실제 카메라 파이프라인과 별개로 불필요하게 CPU를 쓴다(사용자 지적,
+        # 2026-09-16). 시작 탭은 "시험 진행"이라 초기 상태(꺼짐)와 자연히 일치한다.
+        self.simulation_view.set_streaming_active(current_widget is self.simulation_view)

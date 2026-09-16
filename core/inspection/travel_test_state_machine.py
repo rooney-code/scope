@@ -9,6 +9,7 @@
 """
 from __future__ import annotations
 
+import time
 from enum import Enum, auto
 
 from core.config.settings import Stage2Settings
@@ -41,7 +42,7 @@ class TravelTestStateMachine:
     def __init__(self, settings: Stage2Settings, stability_detector_factory=None) -> None:
         self.settings = settings
         self._stability_factory = stability_detector_factory or (
-            lambda: StabilityDetector(window_size_samples=8, variance_threshold_moa2=0.01, min_stable_duration_ms=150)
+            lambda: StabilityDetector(window_size_samples=8, variance_threshold_moa2=0.01, min_stable_duration_ms=3000)
         )
 
         self.direction_queue: list[TravelDirection] = []
@@ -83,7 +84,14 @@ class TravelTestStateMachine:
         self._baseline_primary: float = 0.0
         self._baseline_cross: float = 0.0
         self._pending_checks: list[CheckResult] = []
-        self._dead_click_flagged: bool = False
+
+        # 대기 중(IDLE/DIRECTION_DONE, 진행 중인 방향 없음) 안정성 추적 - 진행 중 방향의
+        # self._stability와 별개 인스턴스. 원점 부근에서 안정적으로 멈춰 있던 마지막 위치를
+        # 계속 갱신해두었다가, 거기서 한 축으로 auto_direction_threshold_moa 이상 벗어나면
+        # 그 위치를 baseline 삼아 자동으로 해당 방향 시험을 시작한다(사용자 요청, 2026-09-16 -
+        # 매 방향마다 버튼을 누르는 번거로움을 줄이기 위함). _feed_idle() 참고.
+        self._idle_stability = self._stability_factory()
+        self._idle_baseline: tuple[float, float] | None = None
 
     # ---- 큐/방향 관리 ----
     def configure(self, directions: list[TravelDirection]) -> None:
@@ -155,6 +163,7 @@ class TravelTestStateMachine:
         self.overall_verdict = Verdict.IN_PROGRESS
         self.finalized = False
         self.phase = Phase.IDLE
+        self._reset_idle_tracking()
 
     def abort_current_direction(self) -> None:
         """'시험 중지' - 현재 시도를 완전히 폐기한다 (결과 미저장). 같은 방향을 재시작할 수 있게
@@ -194,18 +203,87 @@ class TravelTestStateMachine:
     # ---- 최종 확정(DB 저장 게이트) ----
     @property
     def is_ready_to_finalize(self) -> bool:
-        return self.phase == Phase.INSPECTION_DONE and not self.finalized
+        """시험 종료(결과 확정) 가능 여부 - 원래는 4방향을 전부 시도해야(INSPECTION_DONE)만
+        가능했는데, 불량이 나거나 사용자가 일부만 하고 끝내고 싶을 때도 종료할 수 있어야
+        한다는 요청(2026-09-16)에 따라 "지금 진행 중인 방향이 없고(OUTBOUND/RETURN이
+        아니고) 완료된 방향이 하나 이상"이면 언제든 종료 가능하게 완화했다."""
+        return (
+            not self.finalized
+            and self.phase not in (Phase.OUTBOUND, Phase.RETURN)
+            and bool(self.direction_results)
+        )
 
     def finalize(self) -> None:
         """'시험 종료' 버튼 - 지금까지의 결과를 확정한다. 이후에는 재시험이 불가능하며,
         UI/리포지토리는 이 시점의 direction_results/overall_verdict를 DB에 저장한다."""
         if not self.is_ready_to_finalize:
-            raise RuntimeError("아직 모든 방향이 끝나지 않았거나 이미 종료되었습니다.")
+            raise RuntimeError("진행 중인 방향이 있거나 완료된 방향이 없거나 이미 종료되었습니다.")
+        # 4방향을 다 못 채우고(일부만) 종료하는 경우 overall_verdict가 아직 IN_PROGRESS일 수
+        # 있으므로(원래는 INSPECTION_DONE 전환 시점에만 계산됐음) 여기서 확정 직전에 다시
+        # 계산해둔다.
+        self.overall_verdict = (
+            Verdict.PASS if all(r.verdict == Verdict.PASS for r in self.direction_results) else Verdict.FAIL
+        )
         self.finalized = True
+
+    # ---- 실시간 표시용 읽기 전용 접근자 (UI 라이브 표시 + 텍스트 리포트) ----
+    @property
+    def baseline_moa(self) -> tuple[float, float] | None:
+        """현재 진행 중인 방향 시험의 시작 위치(그리드 절대 MOA 좌표) - 아직 시작 전이면 None."""
+        return (self._baseline_x_moa, self._baseline_y_moa) if self._baseline_captured else None
+
+    @property
+    def last_primary_moa(self) -> float:
+        """baseline 기준 상대 주축 값(가장 최근 샘플) - 바깥으로 이동이 양수."""
+        return self._last_primary
+
+    @property
+    def last_abs_cross_moa(self) -> float:
+        """baseline 기준 상대 교차축 값(가장 최근 샘플)의 절대값."""
+        return abs(self._last_cross)
+
+    @property
+    def max_primary_reached_moa(self) -> float:
+        return self._max_primary_reached
+
+    @property
+    def max_abs_cross_moa(self) -> float:
+        return self._max_abs_cross
+
+    @property
+    def idle_wait_remaining_s(self) -> float | None:
+        """대기 baseline(원점 정렬) 안정성 카운트다운까지 남은 시간(초) - 아직 추적을 시작
+        못했으면(방금 리셋됨/윈도우 미충족) None. UI가 "원점 정렬 대기" 메시지에 남은 초를
+        표시하는 데 쓴다(사용자 요청, 2026-09-16)."""
+        return self._idle_stability.remaining_hold_s(time.time())
+
+    @property
+    def direction_wait_remaining_s(self) -> float | None:
+        """현재 진행 중인 방향의 정지 판정(목표 도달/원점 복귀 확인) 카운트다운까지 남은
+        시간(초) - idle_wait_remaining_s와 동일한 용도, 방향 진행 중(OUTBOUND/RETURN) 버전."""
+        return self._stability.remaining_hold_s(time.time())
+
+    @property
+    def idle_baseline_captured(self) -> bool:
+        """방향 진행 중이 아닐 때(대기 중), 레드닷이 한 위치에서 실제로 안정적으로
+        머물렀다고 판단해 "원점 정렬 완료" 상태로 볼 수 있는지 - "대기하세요"와 "이동을
+        감지하면"이 한 문장에 섞여 모순처럼 읽힌다는 지적(2026-09-16)에 따라, UI가 "아직
+        정렬 대기 중"과 "정렬 완료, 이제 이동해도 됨"을 명확히 구분된 두 단계로 안내할 수
+        있게 이 값을 노출한다. _feed_idle()의 _idle_baseline과 동일한 기준(대기 안정성
+        StabilityDetector가 min_stable_duration_ms 동안 낮은 분산을 확인)이다."""
+        return self._idle_baseline is not None
 
     # ---- 실시간 위치 피드 ----
     def feed_position(self, sample: PositionSample) -> None:
-        if self.phase not in (Phase.OUTBOUND, Phase.RETURN) or self.current_direction is None:
+        if self.finalized:
+            return
+        if self.phase in (Phase.IDLE, Phase.DIRECTION_DONE) and self.current_direction is None:
+            self._feed_idle(sample)
+            if self.current_direction is None:
+                return
+            # 자동으로 방향이 시작됐으면(_feed_idle 참고) 리턴하지 않고 이어서 이 샘플을
+            # 그 방향의 첫 OUTBOUND 샘플로 바로 처리한다.
+        elif self.phase not in (Phase.OUTBOUND, Phase.RETURN) or self.current_direction is None:
             return
 
         primary_raw, cross_raw = resolve_primary_and_cross(self.current_direction, sample.x_moa, sample.y_moa)
@@ -260,21 +338,75 @@ class TravelTestStateMachine:
             if abs(self._last_primary) <= self.settings.near_zero_band_moa:
                 self.mark_returned_to_origin()
 
+    def _feed_idle(self, sample: PositionSample) -> None:
+        """진행 중인 방향이 없을 때(IDLE/DIRECTION_DONE) 호출된다 - 원점 부근에서 안정적으로
+        멈춰 있던 마지막 위치를 "대기 baseline"으로 계속 갱신해두고, 거기서 한 축으로
+        auto_direction_threshold_moa 이상 벗어나면 그 축+부호로 방향을 정해 자동으로 그
+        방향 시험을 시작한다. 이때 baseline은 지금 이 샘플이 아니라 "직전에 안정적으로
+        멈춰 있던 위치"를 그대로 쓴다(사용자 요청: 버튼 클릭 시점이 아니라 실제로 멈춰 있던
+        지점이 더 정확함, 2026-09-16)."""
+        state = self._idle_stability.feed(sample)
+        if state.is_stable and state.stable_position is not None:
+            self._idle_baseline = state.stable_position
+
+        if self._idle_baseline is None:
+            return
+
+        bx, by = self._idle_baseline
+        dx = sample.x_moa - bx
+        dy = sample.y_moa - by
+        threshold = self.settings.auto_direction_threshold_moa
+        if abs(dx) < threshold and abs(dy) < threshold:
+            return
+
+        if abs(dy) >= abs(dx):
+            direction = TravelDirection.UP if dy > 0 else TravelDirection.DOWN
+        else:
+            direction = TravelDirection.RIGHT if dx > 0 else TravelDirection.LEFT
+
+        self.start_direction(direction)  # 큐/planned_directions 관리 로직 재사용
+
+        # start_direction() -> _reset_direction_buffers()가 baseline 캡처 상태를 지웠으므로,
+        # 대기 중 추적해둔 baseline 값으로 즉시 다시 채워넣는다 - 아래 feed_position()의
+        # "if not self._baseline_captured" 블록이 (현재 이동 중인) 이 샘플을 baseline으로
+        # 잘못 잡지 않도록 함.
+        self._baseline_x_moa, self._baseline_y_moa = bx, by
+        self._baseline_primary, self._baseline_cross = resolve_primary_and_cross(direction, bx, by)
+        self._baseline_captured = True
+
+        self._idle_baseline = None
+        self._idle_stability.reset()
+
     # ---- 작업자 액션 ----
-    def flag_dead_click(self) -> None:
-        """작업자가 데드클릭 발생을 직접 판단/입력. 다른 검사와 무관하게 즉시 불량 처리."""
-        self._dead_click_flagged = True
-        self._finalize_direction(
-            [
+    def set_dead_click(self, direction: TravelDirection, flagged: bool) -> None:
+        """방향 완료 후 결과표에서 O/X로 토글한다(flag_dead_click()의 즉시-중단 방식을
+        대체) - 시험 도중 바로 누르게 하면 흐름이 끊기므로, 네 방향이 다 끝난 뒤 작업자가
+        기억을 더듬어 한 번에 토글하는 방식으로 바꿨다(사용자 요청, 2026-09-16). flagged가
+        True면 그 방향의 최종 판정을 측정 결과와 무관하게 강제로 FAIL로 덮어쓰고, False면
+        데드클릭 항목을 지우고 원래 측정 기반 판정으로 되돌린다. 대상 방향이 아직 한 번도
+        완료된 적 없으면(direction_results에 없으면) 예외를 던진다."""
+        result = next((r for r in self.direction_results if r.direction == direction), None)
+        if result is None:
+            raise RuntimeError(f"{direction.value}는 아직 완료된 적이 없어 데드클릭을 표시할 수 없습니다.")
+
+        result.check_results = [c for c in result.check_results if c.check_type != CheckType.DEAD_CLICK]
+        if flagged:
+            result.check_results.append(
                 CheckResult(
                     check_type=CheckType.DEAD_CLICK,
                     measured_value=None,
                     threshold_used=None,
                     status=Verdict.FAIL,
                 )
-            ],
-            Verdict.FAIL,
-        )
+            )
+        result.verdict = Verdict.FAIL if any(c.status == Verdict.FAIL for c in result.check_results) else Verdict.PASS
+
+        if self.direction_results:
+            self.overall_verdict = (
+                Verdict.PASS
+                if all(r.verdict == Verdict.PASS for r in self.direction_results)
+                else Verdict.FAIL
+            )
 
     def mark_far_point_reached(self) -> None:
         """작업자가 목표(약 35MOA) 부근까지 이동을 완료했음을 알림 ('이동 완료' 버튼).
@@ -358,8 +490,20 @@ class TravelTestStateMachine:
         self._finalize_direction(checks, Verdict.PASS if backlash_ok else Verdict.FAIL)
 
     # ---- 내부 ----
+    def _reset_idle_tracking(self) -> None:
+        """대기(idle) 안정성 추적을 완전히 새로 시작한다 - 방향이 시작되거나 끝날 때
+        (_reset_direction_buffers/_finalize_direction) 호출하지 않으면, 방향이 시작되기
+        전에 이미 쌓여 있던 오래된 안정 시작 시각(_stable_since_s)이 그대로 남아있다가,
+        방향이 끝나고 우연히 같은(원점 근처) 위치에서 첫 idle 샘플을 받는 순간 "경과 시간"이
+        이미 3초를 훌쩍 넘긴 것처럼 계산되어 대기 카운트다운 없이 즉시 "정렬 완료"로
+        오판되는 문제가 있었다(실측으로 확인, 2026-09-16: 원점 근처로 가면 바로 완료 메시지가
+        뜸 + 메시지 4개가 한꺼번에 뜸)."""
+        self._idle_stability = self._stability_factory()
+        self._idle_baseline = None
+
     def _reset_direction_buffers(self) -> None:
         self._stability = self._stability_factory()
+        self._reset_idle_tracking()
         self._max_primary_reached = 0.0
         self._max_abs_cross = 0.0
         self._last_primary = 0.0
@@ -374,7 +518,6 @@ class TravelTestStateMachine:
         self._baseline_primary = 0.0
         self._baseline_cross = 0.0
         self._pending_checks = []
-        self._dead_click_flagged = False
 
     def _finalize_direction(self, checks: list[CheckResult], verdict: Verdict) -> None:
         direction = self.current_direction
@@ -395,6 +538,9 @@ class TravelTestStateMachine:
 
         self.current_direction = None
         self.phase = Phase.DIRECTION_DONE
+        # 방향이 막 끝나 다시 대기(idle) 상태로 돌아가는 시점 - idle 추적을 깨끗하게
+        # 새로 시작해야 한다(_reset_idle_tracking 참고, 실측 버그 수정 2026-09-16).
+        self._reset_idle_tracking()
 
         if self._sequential_queue_mode:
             if verdict == Verdict.FAIL and self.settings.stop_on_failure_scope == "entire_inspection":

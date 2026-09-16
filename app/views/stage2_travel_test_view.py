@@ -1,21 +1,43 @@
 """2단계: 트래블 검사 실행 화면.
 
-작업자가 누르는 버튼은 최소화한다 - 방향마다 자기 자신의 시작/재시작 버튼과 데드클릭
-버튼만 있는 박스 하나씩(상/하/좌/우, 순서 무관하게 언제든 누를 수 있음), 목표(35MOA)/
-원점 근처에서 잠깐 멈추면 이동량/쉬프트/드리프트/백래쉬가 전부 자동으로 평가된다(실제
-작업자가 하던 방식: 이동 -> 눈금 확인(멈춤) -> 후진 -> 원점 근처 멈춤 을 그대로 인식).
-동시에 두 방향을 진행할 수 없으므로, 다른 방향이 진행 중일 때 어떤 박스의 시작 버튼을
-눌러도 그 진행 중이던 방향의 미완성 데이터는 폐기되고 새로 누른 방향이 시작된다(상태
-기계가 처리) - 재시작 전 항상 원점으로 이동해야 하므로 부분 기록은 의미가 없다는 판단.
+"시험 시작"을 누르면(부품 ID 입력 필요) 대기 baseline 추적이 시작된다 - 이후 레드닷을 실제로
+상/하/좌/우 중 한 방향으로 일정량 이상 이동시키면 버튼을 누르지 않아도 자동으로 그 방향
+시험이 시작된다(TravelTestStateMachine._feed_idle 참고, 사용자 요청 2026-09-16 - 매 방향마다
+버튼을 누르는 번거로움을 줄이기 위함). 상/하/좌/우 버튼은 캘리브레이션 미세조정 화살표처럼
+십자로 배치되어 있고, 자동 인식이 느리거나 애매할 때 수동으로 (재)시작하는 용도로 남아있다.
+중앙의 "원점 복귀"도 마찬가지로 자동 판정(근접 범위+안정성)의 수동 오버라이드다.
+
+데드클릭은 시험 중 바로 누르면 흐름이 끊기므로, 방향이 끝난 뒤 하단 종합표에서 O/X 토글로
+표시한다(기본 X) - 작업자가 네 방향을 다 마친 뒤 기억을 더듬어 한 번에 표시할 수 있다.
+
+안내 메시지는 "지금 뭘 해야 하는지"를 한 줄로만 보여주면 눈에 잘 안 띄고 이전 단계가 뭐였는지
+알 수 없다는 지적(2026-09-16)에 따라, 지나간 메시지는 "완료" 표시로 남겨두는 로그 형태로
+보여준다(guidance_log, QListWidget) - 새 메시지가 생기면 이전 메시지를 완료 처리하고 새로
+추가한다.
+
+"대기" 단계(원점 정렬/백래쉬 측정)는 3초(StabilitySettings.min_stable_duration_s) 동안
+가만히 있어야 다음으로 넘어가는데, 그 대기시간이 화면에 안 보인다는 지적(2026-09-16)에 따라
+"...... 3/2/1" 카운트다운을 붙인다 - 단, 매초 새 로그 항목을 만들면 로그가 초 단위로 도배되니
+_set_guidance_stage()/_update_current_guidance_text()로 같은 항목의 텍스트만 갱신하고, 실제로
+다른 단계로 넘어갈 때만 _set_guidance()로 새 항목을 만든다.
 """
 from __future__ import annotations
 
-from PySide6.QtGui import QColor
+import math
+import time
+
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (
-    QGroupBox,
+    QCheckBox,
+    QFrame,
+    QGridLayout,
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
@@ -23,7 +45,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from core.inspection.models import CheckType, DirectionTestResult, TravelDirection
+from core.inspection.models import CheckType, DirectionTestResult, Stage2LiveState, TravelDirection, Verdict
 from core.inspection.travel_test_state_machine import Phase
 
 
@@ -42,41 +64,159 @@ _CHECK_ROW_LABELS = {
     CheckType.BACKLASH: "백래쉬 (MOA)",
 }
 _CHECK_ROW_ORDER = (CheckType.TRAVEL_AMOUNT, CheckType.DEAD_CLICK, CheckType.DRIFT, CheckType.SHIFT, CheckType.BACKLASH)
+# "백래쉬 측정을 완료 하였습니다" 메시지를 다음 안내로 넘어가기 전에 붙잡아두는 시간(초) -
+# _refresh_guidance() 참고 (사용자 지적, 2026-09-16).
+_BACKLASH_DONE_HOLD_S = 2.0
+# 카운트다운 메시지("기본 문구 ...... N")의 구분자 - _set_guidance_stage()가 붙이고,
+# _strip_countdown_suffix()가 "완료" 처리 시 떼어낸다.
+_COUNTDOWN_SEP = " ...... "
+# 시험 시작/방향/원점복귀 버튼들의 통일된 너비 - 제각각이면 줄이 안 맞아 보인다는
+# 지적(2026-09-16)에 따라 고정폭으로 맞춘다.
+_BUTTON_WIDTH_PX = 150
+# "부품 ID:"/"시험 진행:" 라벨들의 통일된 너비 - 그 옆의 입력란/버튼 줄이 서로 세로로
+# 맞춰 보이도록 한다(사용자 요청, 2026-09-16).
+_ROW_LABEL_WIDTH_PX = 80
+
+
+def _strip_countdown_suffix(text: str) -> str:
+    """카운트다운 접미사(" ...... N")가 붙어있으면 떼어내고 기본 문구만 반환한다 - 카운트다운
+    도중(예: "...... 1")에 다음 단계로 넘어가면서 "완료" 처리될 때, 남은 숫자가 안 지워진 채
+    "...... 1  ······  완료"처럼 보이는 문제를 막는다(사용자 지적, 2026-09-16)."""
+    return text.split(_COUNTDOWN_SEP, 1)[0]
+
+
+# 방향이 끝났을 때(_on_direction_completed) 잠깐 붙잡아두는(_BACKLASH_DONE_HOLD_S) 완료 안내
+# 문구를 실제로 어떤 검사까지 진행됐는지에 맞게 고른다 - 예전엔 항상 "백래쉬 측정을 완료
+# 하였습니다"로 고정돼 있었는데, 34MOA쯤에서 '이동 완료'를 눌러 이동량 부족으로 바로 불량
+# 종료된 경우처럼 백래쉬를 측정한 적도 없는데 측정했다고 안내하는 문제가 있었다(사용자 지적,
+# 2026-09-16). CheckResult는 실패 즉시 중단되므로(TravelTestStateMachine._finalize_direction
+# 호출부들 참고) 마지막 항목이 곧 "여기서 멈췄다"는 뜻이다.
+_CHECK_FAIL_LABELS = {
+    CheckType.TRAVEL_AMOUNT: "이동량 부족",
+    CheckType.SHIFT: "쉬프트 초과",
+    CheckType.DRIFT: "드리프트 초과",
+    CheckType.BACKLASH: "백래쉬 초과",
+}
+
+
+def _direction_completion_message(result: DirectionTestResult) -> str:
+    if any(c.check_type == CheckType.BACKLASH for c in result.check_results):
+        return "백래쉬 측정을 완료 하였습니다."
+    last_check = result.check_results[-1] if result.check_results else None
+    if last_check is not None and last_check.status == Verdict.FAIL:
+        reason = _CHECK_FAIL_LABELS.get(last_check.check_type, last_check.check_type.value)
+        return f"{reason}(으)로 판정되어 이 방향 시험이 조기 종료되었습니다."
+    return "측정을 완료 하였습니다."
 
 
 class Stage2TravelTestView(QWidget):
     def __init__(self, viewmodel, parent=None) -> None:
         super().__init__(parent)
         self.vm = viewmodel
+        self._session_started = False
+        self._current_guidance_text: str | None = None
+        # 카운트다운 표시 중인 "단계"를 추적 - 같은 단계(같은 base_text) 안에서는 숫자만
+        # 바뀌므로 새 로그 항목을 만들지 않는다(_set_guidance_stage 참고).
+        self._current_guidance_stage: str | None = None
+        # "백래쉬 측정을 완료 하였습니다" 메시지를 다음 안내로 즉시 덮어쓰지 않고 잠깐
+        # 붙잡아두기 위한 타임스탬프(_refresh_guidance 참고, 사용자 지적, 2026-09-16: 완료
+        # 메시지가 다음 메시지와 동시에 "완료" 처리되어 읽을 새가 없었음).
+        self._direction_completed_at: float | None = None
+        # _direction_completed_at 동안 보여줄 문구 - 실제로 어디까지 측정됐는지에 따라
+        # 달라진다(_direction_completion_message 참고).
+        self._pending_completion_message: str | None = None
 
-        self.status_label = QLabel("대기 중")
+        # 안내 메시지 로그 - 눈에 잘 안 띄고 지난 메시지를 알 수 없다는 지적(2026-09-16)에
+        # 따라, 큰 글씨 + 배경색으로 눈에 띄게 하고 지나간 메시지는 "완료" 표시로 남긴다.
+        # 긴 문장이 가로 스크롤을 만들지 않도록 줄바꿈하고(사용자 지적, 2026-09-16), 줄바꿈된
+        # 메시지도 잘 보이게 세로 길이를 넉넉히 잡는다(기존의 약 2배).
+        self.guidance_log = QListWidget()
+        self.guidance_log.setWordWrap(True)
+        self.guidance_log.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.guidance_log.setStyleSheet(
+            "QListWidget { font-size: 12pt; background: #fffceb; border: 2px solid #d4a017; "
+            "border-radius: 4px; padding: 4px; }"
+            "QListWidget::item { padding: 3px 2px; }"
+        )
+        self.guidance_log.setMaximumHeight(300)
 
-        # 방향별 박스 - 각자 자기 시작/재시작 버튼 + 데드클릭 버튼
-        self._status_labels: dict[TravelDirection, QLabel] = {}
-        self._start_buttons: dict[TravelDirection, QPushButton] = {}
-        self._dead_click_buttons: dict[TravelDirection, QPushButton] = {}
+        # 부품 ID 입력 + 시험 시작/재시작을 한 줄에 - 입력란 옆에 바로 시작 버튼이 있어야
+        # 자연스럽다는 요청(2026-09-16). 입력란이 너무 길다는 지적(2026-09-16)에 따라
+        # 적당한 고정 폭으로 줄인다 - 버튼 정렬을 위해 그리드 열을 공유하던 예전 방식은
+        # 버튼들이 이제 별도 행(cross)으로 옮겨가면서 더 이상 필요 없다.
+        self.scope_id_input = QLineEdit()
+        self.scope_id_input.setPlaceholderText("부품 ID")
+        self.scope_id_input.setFixedWidth(300)
+        self.scope_id_input.textChanged.connect(self.vm.set_scope_id)
+        # 방향 버튼들과 너비를 맞춰 정렬이 흐트러지지 않게 한다(사용자 요청, 2026-09-16 -
+        # "각 버튼의 너비는 250px로 고정").
+        self.session_toggle_btn = QPushButton("시험 시작")
+        self.session_toggle_btn.setFixedWidth(_BUTTON_WIDTH_PX)
+        self.session_toggle_btn.clicked.connect(self._on_session_toggle)
 
-        direction_boxes = QVBoxLayout()
-        for direction in _DIRECTION_ORDER:
-            box = QGroupBox(_DIRECTION_LABELS[direction])
-            row = QHBoxLayout(box)
+        id_label = QLabel("부품 ID:")
+        id_label.setFixedWidth(_ROW_LABEL_WIDTH_PX)
+        session_row = QHBoxLayout()
+        session_row.addWidget(id_label)
+        session_row.addWidget(self.scope_id_input)
+        session_row.addWidget(self.session_toggle_btn)
+        session_row.addStretch(1)
 
-            status = QLabel("대기 중")
-            self._status_labels[direction] = status
+        id_test_separator = QFrame()
+        id_test_separator.setFrameShape(QFrame.HLine)
+        id_test_separator.setFrameShadow(QFrame.Sunken)
 
-            start_btn = QPushButton("시작")
-            start_btn.clicked.connect(lambda _checked=False, d=direction: self._on_start_direction(d))
-            self._start_buttons[direction] = start_btn
+        # 십자 배치(상/하/좌/우 + 가운데 원점 복귀) - 캘리브레이션 미세조정 화살표와 같은
+        # 배치(사용자 요청, 2026-09-16). 각 방향 버튼은 자동 인식의 수동 오버라이드. 버튼마다
+        # 있던 "대기중/이동중/복귀중/합격/불량" 상태 라벨은 안내 메시지 로그 + 아래 종합
+        # 결과표와 내용이 겹쳐서 제거했다(사용자 지적, 2026-09-16).
+        self._direction_buttons: dict[TravelDirection, QPushButton] = {}
 
-            dead_click_btn = QPushButton("데드클릭")
-            dead_click_btn.setEnabled(False)
-            dead_click_btn.clicked.connect(self._on_dead_click)
-            self._dead_click_buttons[direction] = dead_click_btn
+        cross = QGridLayout()
+        cross.addWidget(self._make_direction_cell(TravelDirection.UP), 0, 1)
+        cross.addWidget(self._make_direction_cell(TravelDirection.LEFT), 1, 0)
+        # 중앙 버튼은 단계에 따라 역할이 바뀐다 - OUTBOUND 중엔 "이동 완료"(기계적 한계로
+        # 목표(35MOA-여유)에 살짝 못 미쳐 자동 판정이 안 걸리는 경우의 수동 확정,
+        # mark_far_point_reached()), RETURN 중엔 "원점 복귀"(mark_returned_to_origin()) -
+        # 둘 다 "자동 판정이 기본, 애매하면 수동 오버라이드" 패턴(사용자 지적, 2026-09-16:
+        # 이동 완료 쪽 수동 버튼이 새 UI에 빠져 있어서 34.49MOA에서 멈춘 시험이 영영
+        # RETURN으로 못 넘어간 문제).
+        self._center_action_btn = QPushButton("원점 복귀")
+        self._center_action_btn.setEnabled(False)
+        self._center_action_btn.setFixedWidth(_BUTTON_WIDTH_PX)
+        self._center_action_btn.clicked.connect(self._on_center_action)
+        cross.addWidget(self._center_action_btn, 1, 1)
+        cross.addWidget(self._make_direction_cell(TravelDirection.RIGHT), 1, 2)
+        cross.addWidget(self._make_direction_cell(TravelDirection.DOWN), 2, 1)
 
-            row.addWidget(status, stretch=1)
-            row.addWidget(start_btn)
-            row.addWidget(dead_click_btn)
-            direction_boxes.addWidget(box)
+        # "부품 ID:" 라벨 바로 아랫단에 "시험 진행:" 라벨을 두고 그 옆에 십자 버튼을 배치한다
+        # (사용자 요청, 2026-09-16).
+        test_progress_label = QLabel("시험 진행:")
+        test_progress_label.setFixedWidth(_ROW_LABEL_WIDTH_PX)
+        test_progress_row = QHBoxLayout()
+        test_progress_row.addWidget(test_progress_label)
+        test_progress_row.addLayout(cross)
+        test_progress_row.addStretch(1)
+
+        result_separator = QFrame()
+        result_separator.setFrameShape(QFrame.HLine)
+        result_separator.setFrameShadow(QFrame.Sunken)
+
+        end_separator = QFrame()
+        end_separator.setFrameShape(QFrame.HLine)
+        end_separator.setFrameShadow(QFrame.Sunken)
+
+        # 실시간 표시 줄 - 방향별 박스 버튼이 더 이상 필수 조작이 아니므로, 지금 무슨 일이
+        # 일어나고 있는지(시작위치/현재위치/최대도달/최대편차) 화면으로 볼 수 있어야 한다는
+        # 요청(2026-09-16)에 따라 추가.
+        self._live_direction_label = QLabel()
+        self._live_position_label = QLabel()
+        self._live_extent_label = QLabel()
+        self._reset_live_readout()
+        live_box = QVBoxLayout()
+        live_box.addWidget(self._live_direction_label)
+        live_box.addWidget(self._live_position_label)
+        live_box.addWidget(self._live_extent_label)
 
         # 종합 결과: 항목(체크타입) x 방향 + 결과
         self.results_table = QTableWidget(len(_CHECK_ROW_ORDER), len(_DIRECTION_ORDER) + 2)
@@ -96,101 +236,312 @@ class Stage2TravelTestView(QWidget):
         self.results_table.verticalHeader().setVisible(False)
         self._refresh_results_table()
 
-        abort_btn = QPushButton("시험 중지")
-        abort_btn.clicked.connect(self._on_abort)
-        restart_all_btn = QPushButton("전체 재시작")
-        restart_all_btn.clicked.connect(self._on_restart_all)
-        interrupt_layout = QHBoxLayout()
-        interrupt_layout.addWidget(abort_btn)
-        interrupt_layout.addWidget(restart_all_btn)
+        self.abort_btn = QPushButton("시험 중지")
+        self.abort_btn.setEnabled(False)
+        self.abort_btn.clicked.connect(self._on_abort)
 
         self.finalize_btn = QPushButton("시험 종료 (결과 저장)")
         self.finalize_btn.setEnabled(False)
         self.finalize_btn.clicked.connect(self._on_finalize)
 
         layout = QVBoxLayout(self)
-        layout.addWidget(self.status_label)
-        layout.addLayout(direction_boxes)
+        layout.addWidget(self.guidance_log)
+        layout.addLayout(session_row)
+        layout.addWidget(id_test_separator)
+        layout.addLayout(test_progress_row)
+        layout.addLayout(live_box)
+        layout.addWidget(result_separator)
         layout.addWidget(QLabel("종합 결과:"))
         layout.addWidget(self.results_table)
-        layout.addLayout(interrupt_layout)
+        layout.addWidget(end_separator)
+        layout.addWidget(self.abort_btn)
         layout.addWidget(self.finalize_btn)
 
         self.vm.phase_changed.connect(self._on_phase_changed)
         self.vm.direction_completed.connect(self._on_direction_completed)
         self.vm.inspection_completed.connect(self._on_inspection_completed)
         self.vm.inspection_finalized.connect(self._on_inspection_finalized)
+        self.vm.stage2_live_update.connect(self._on_live_update)
+
+        self._refresh_guidance()
+
+    # ---- 위젯 생성 ----
+    def _make_direction_cell(self, direction: TravelDirection) -> QPushButton:
+        btn = QPushButton(f"{_DIRECTION_LABELS[direction]} 시작")
+        btn.setFixedWidth(_BUTTON_WIDTH_PX)
+        btn.clicked.connect(lambda _checked=False, d=direction: self._on_start_direction(d))
+        self._direction_buttons[direction] = btn
+        return btn
+
+    def _reset_live_readout(self) -> None:
+        self._live_direction_label.setText("진행 중인 방향: -")
+        self._live_position_label.setText("시작 위치: -    현재 위치: -")
+        self._live_extent_label.setText("최대 도달: -    최대 편차: -")
 
     # ---- 액션 ----
+    def _on_session_toggle(self) -> None:
+        if not self._session_started:
+            if not self.vm.can_start_inspection():
+                self._set_guidance("부품 ID를 먼저 입력하세요 - 시험을 시작할 수 없습니다.")
+                return
+            self.vm.start_inspection_session()
+            self._session_started = True
+            self.session_toggle_btn.setText("전체 재시작")
+            self._refresh_guidance()
+        else:
+            self._on_restart_all()
+
     def _on_start_direction(self, direction: TravelDirection) -> None:
         if not self.vm.can_start_inspection():
-            self.status_label.setText("부품 ID를 먼저 입력하세요 - 시험을 시작할 수 없습니다.")
+            self._set_guidance("부품 ID를 먼저 입력하세요 - 시험을 시작할 수 없습니다.")
             return
         try:
             self.vm.start_direction(direction)
         except RuntimeError as exc:
-            self.status_label.setText(str(exc))
-            return
-        self._set_all_dead_click_enabled(False)
-        self._dead_click_buttons[direction].setEnabled(True)
-        for d, label in self._status_labels.items():
-            if d == direction:
-                label.setText("이동 중")
-        self.status_label.setText(
-            f"{_DIRECTION_LABELS[direction]} 방향 이동 중 - 목표(35MOA) 근처에서 잠깐 멈추면 자동 평가됩니다"
-        )
+            self._set_guidance(str(exc))
 
-    def _on_dead_click(self) -> None:
-        self.vm.flag_dead_click()
+    def _on_center_action(self) -> None:
+        phase = self.vm.state_machine.phase
+        if phase == Phase.OUTBOUND:
+            self.vm.mark_far_point_reached()
+        elif phase == Phase.RETURN:
+            self.vm.mark_returned_to_origin()
 
     def _on_abort(self) -> None:
         self.vm.abort_current_direction()
-        self._set_all_dead_click_enabled(False)
-        self.status_label.setText("시험 중지됨 (미기록)")
+        self._reset_live_readout()
+        # 중지 전에 이미 완료된 방향이 있었다면(예: 상 합격 후 하 진행 중 중지) 그 결과만으로도
+        # 시험을 종료할 수 있어야 한다(사용자 요청, 2026-09-16).
+        if self.vm.is_ready_to_finalize:
+            self.finalize_btn.setEnabled(True)
+        self._refresh_guidance()
 
     def _on_restart_all(self) -> None:
         self.vm.restart_all()
+        self._session_started = False
+        self.session_toggle_btn.setText("시험 시작")
         for direction in _DIRECTION_ORDER:
-            self._status_labels[direction].setText("대기 중")
-            self._start_buttons[direction].setText("시작")
-        self._set_all_dead_click_enabled(False)
+            self._direction_buttons[direction].setText(f"{_DIRECTION_LABELS[direction]} 시작")
+        self._center_action_btn.setText("원점 복귀")
+        self._center_action_btn.setEnabled(False)
+        self._reset_live_readout()
         self._refresh_results_table()
-        self.status_label.setText("전체 재시작됨")
         self.finalize_btn.setEnabled(False)
+        self.guidance_log.clear()
+        self._current_guidance_text = None
+        self._current_guidance_stage = None
+        self._direction_completed_at = None
+        self._pending_completion_message = None
+        self._refresh_guidance()
 
     def _on_finalize(self) -> None:
         overall = self.vm.finalize_inspection()
-        self.status_label.setText(f"저장 완료 - 최종 판정: {overall}")
+        self._set_guidance(f"저장 완료 - 최종 판정: {overall}")
         self.finalize_btn.setEnabled(False)
-        for btn in self._start_buttons.values():
+        for btn in self._direction_buttons.values():
             btn.setEnabled(False)
 
-    def _set_all_dead_click_enabled(self, enabled: bool) -> None:
-        for btn in self._dead_click_buttons.values():
-            btn.setEnabled(enabled)
+    def _on_dead_click_toggled(self, direction: TravelDirection, checked: bool) -> None:
+        try:
+            self.vm.set_dead_click(direction, checked)
+        except RuntimeError:
+            pass  # 아직 완료된 적 없는 방향 - 체크박스가 비활성화돼 있어 정상적으론 안 일어남
 
     # ---- 뷰모델 시그널 반응 ----
     def _on_phase_changed(self, phase_name: str) -> None:
         current = self.vm.state_machine.current_direction
-        if phase_name == Phase.RETURN.name and current is not None:
-            self._status_labels[current].setText("복귀 중")
-            self.status_label.setText("원점으로 복귀 중 - 원점 근처에서 잠깐 멈추면 자동 평가됩니다")
+        # "시험 중지"는 실제로 진행 중인 방향이 있을 때만 의미가 있다 - 없는데 누르면
+        # state_machine.abort_current_direction()이 예외를 던진다(사용자 지적, 2026-09-16:
+        # "중지할 진행 중인 방향이 없습니다" 로그). OUTBOUND/RETURN일 때만 활성화한다.
+        self.abort_btn.setEnabled(phase_name in (Phase.OUTBOUND.name, Phase.RETURN.name))
+        if phase_name == Phase.OUTBOUND.name and current is not None:
+            self._center_action_btn.setText("이동 완료")
+            self._center_action_btn.setEnabled(True)
+        elif phase_name == Phase.RETURN.name and current is not None:
+            self._center_action_btn.setText("원점 복귀")
+            self._center_action_btn.setEnabled(True)
+        else:
+            self._center_action_btn.setText("원점 복귀")
+            self._center_action_btn.setEnabled(False)
+        self._refresh_guidance()
 
     def _on_direction_completed(self, result: DirectionTestResult) -> None:
-        self._status_labels[result.direction].setText(result.verdict.value)
-        self._start_buttons[result.direction].setText("재시작")
-        self._set_all_dead_click_enabled(False)
+        self._sync_direction_status()
+        self._reset_live_readout()
         self._refresh_results_table()
         if self.vm.is_ready_to_finalize:
             self.finalize_btn.setEnabled(True)
+        # 방향이 막 끝난 시점을 기록해둔다 - _refresh_guidance()가 이 시각으로부터 일정
+        # 시간 동안은 완료 안내 메시지를 붙잡아두고 다음 안내로 곧바로 덮어쓰지 않는다
+        # (사용자 지적, 2026-09-16: 완료 메시지와 다음 메시지가 동시에 "완료" 처리되어
+        # 버려서 읽을 새가 없었음). 실제로 어디까지 측정됐는지(백래쉬까지 갔는지, 아니면
+        # 이동량 부족 등으로 도중에 불량 종료됐는지)에 따라 문구를 다르게 고른다(사용자
+        # 지적, 2026-09-16: 34MOA에서 '이동 완료'를 눌러 백래쉬를 측정한 적도 없는데
+        # "백래쉬 측정을 완료 하였습니다"라고 안내됨).
+        self._pending_completion_message = _direction_completion_message(result)
+        self._direction_completed_at = time.time()
+        self._refresh_guidance()
 
     def _on_inspection_completed(self, overall_verdict: str) -> None:
-        self.status_label.setText(f"모든 방향 완료 - 전체 판정: {overall_verdict} (시험 종료를 눌러 저장하세요)")
         if self.vm.is_ready_to_finalize:
             self.finalize_btn.setEnabled(True)
+        self._refresh_guidance()
 
     def _on_inspection_finalized(self, overall_verdict: str) -> None:
         self.finalize_btn.setEnabled(False)
+
+    def _on_live_update(self, state: Stage2LiveState) -> None:
+        if state.current_direction is None:
+            self._reset_live_readout()
+            # 방향이 끝난 뒤 "원점으로 이동" -> "다음 방향 진행" 두 단계를 구분하려면 idle
+            # 상태에서도 현재 위치(x/y)가 필요하다(사용자 요청, 2026-09-16).
+            self._refresh_guidance(state)
+            return
+        self._live_direction_label.setText(f"진행 중인 방향: {_DIRECTION_LABELS[state.current_direction]}")
+        start_text = "시작 위치: -"
+        if state.baseline_moa is not None:
+            bx, by = state.baseline_moa
+            start_text = f"시작 위치: x={bx:.2f}, y={by:.2f}"
+        current_text = "현재 위치: -"
+        if state.current_x_moa is not None and state.current_y_moa is not None:
+            current_text = f"현재 위치: x={state.current_x_moa:.2f}, y={state.current_y_moa:.2f}"
+        self._live_position_label.setText(f"{start_text}    {current_text}")
+        max_reached = f"{state.max_primary_reached_moa:.2f}" if state.max_primary_reached_moa is not None else "-"
+        max_cross = f"{state.max_abs_cross_moa:.2f}" if state.max_abs_cross_moa is not None else "-"
+        self._live_extent_label.setText(f"최대 도달: {max_reached}    최대 편차: {max_cross}")
+        self._refresh_guidance(state)
+
+    # ---- 안내 메시지 ----
+    def _set_guidance(self, text: str) -> None:
+        """안내 메시지를 로그에 추가한다 - 단순 setText 하나로는 눈에 잘 안 띄고 지난
+        메시지를 알 수 없다는 지적(2026-09-16)에 따라, 이전 메시지는 "완료" 표시로 남기고
+        새 메시지를 굵게 추가한다. 같은 텍스트가 연속되면(매 프레임 재계산되는 경우가 많음)
+        중복 추가하지 않는다."""
+        if text == self._current_guidance_text:
+            return
+        if self._current_guidance_text is not None:
+            last_item = self.guidance_log.item(self.guidance_log.count() - 1)
+            if last_item is not None:
+                # 카운트다운 단계(_set_guidance_stage)가 끝나기 직전(예: "...... 1")에
+                # 다음 단계로 넘어오면, 남은 숫자가 안 지워진 채로 "완료"가 붙어 "...... 1
+                # ...... 완료"처럼 보이는 문제가 있었다(사용자 지적, 2026-09-16) - "완료"로
+                # 표시할 때는 카운트다운 접미사를 떼고 기본 문구만 남긴다.
+                last_item.setText(f"{_strip_countdown_suffix(self._current_guidance_text)}  ······  완료")
+                last_item.setForeground(QColor("#8a8a8a"))
+                normal_font = QFont(last_item.font())
+                normal_font.setBold(False)
+                last_item.setFont(normal_font)
+        new_item = QListWidgetItem(text)
+        bold_font = QFont(new_item.font())
+        bold_font.setBold(True)
+        new_item.setFont(bold_font)
+        new_item.setForeground(QColor("#1a1a1a"))
+        self.guidance_log.addItem(new_item)
+        self.guidance_log.scrollToBottom()
+        self._current_guidance_text = text
+        self._current_guidance_stage = None  # 일반 메시지는 카운트다운 단계 추적 대상이 아님
+
+    def _update_current_guidance_text(self, text: str) -> None:
+        """지금 표시 중인(맨 아래) 안내 메시지의 텍스트만 바꾼다 - _set_guidance()처럼 새
+        로그 항목을 만들거나 이전 항목을 "완료" 처리하지 않는다. 카운트다운처럼 같은 단계
+        안에서 숫자만 바뀌는 경우 전용(_set_guidance_stage 참고) - 매초 새 항목을 만들면
+        로그가 초 단위로 도배된다."""
+        if text == self._current_guidance_text:
+            return
+        self._current_guidance_text = text
+        last_item = self.guidance_log.item(self.guidance_log.count() - 1)
+        if last_item is not None:
+            last_item.setText(text)
+
+    def _set_guidance_stage(self, base_text: str, remaining_s: float | None) -> None:
+        """3초 대기(StabilitySettings.min_stable_duration_s) 같은 "단계"를 카운트다운과
+        함께 보여준다 - 대기시간이 화면에 안 보인다는 지적(2026-09-16)에 따라 추가. 아직
+        안정 추적이 시작 안 됐으면(remaining_s=None) 카운트다운 없이 기본 문구만, 추적
+        중이면 "...... N"을 붙인다. 같은 단계(base_text) 안에서는 초마다 새 로그 항목을
+        만들지 않고 텍스트만 갱신하고, 다른 단계로 막 넘어온 참이면 새 항목을 만든다."""
+        text = base_text if remaining_s is None else f"{base_text}{_COUNTDOWN_SEP}{max(0, math.ceil(remaining_s))}"
+        if self._current_guidance_stage == base_text and self._current_guidance_text is not None:
+            self._update_current_guidance_text(text)
+            return
+        self._set_guidance(text)
+        self._current_guidance_stage = base_text
+
+    def _refresh_guidance(self, live_state: Stage2LiveState | None = None) -> None:
+        """"지금 뭘 해야 하는지" 사용자-프로그램 간 약속이 애매하다는 지적(2026-09-16)에
+        따라, 매 단계마다 다음 행동을 명확히 안내한다. _set_guidance() 하나로 통일해서
+        예전처럼 여러 곳에서 서로 다른 문구를 개별적으로 setText하다 꼬이는 일이 없게 한다."""
+        if not self._session_started:
+            self._set_guidance("부품 ID를 입력하고 '시험 시작'을 눌러주세요")
+            return
+
+        sm = self.vm.state_machine
+        direction = sm.current_direction
+        stage2 = self.vm.settings.stage2
+
+        if direction is None:
+            if sm.phase == Phase.INSPECTION_DONE:
+                self._set_guidance("모든 방향 완료 - '시험 종료'를 눌러 저장하세요")
+                return
+
+            # 백래쉬 측정이 막 끝난 직후엔, 다음 안내로 바로 넘어가기 전에 그 완료 메시지를
+            # 잠깐 붙잡아둔다 - 곧장 다음 메시지로 덮어쓰면 로그에서 둘 다 동시에 "완료"
+            # 처리되어 버려 사용자가 읽을 새가 없었다(사용자 지적, 2026-09-16).
+            if self._direction_completed_at is not None:
+                if time.time() - self._direction_completed_at < _BACKLASH_DONE_HOLD_S:
+                    self._set_guidance(self._pending_completion_message or "측정을 완료 하였습니다.")
+                    return
+                self._direction_completed_at = None
+
+            # "원점 대기 중" <-> "원점 정렬 완료"를 상태기계의 idle baseline 캡처 여부로
+            # 판단한다(idle_baseline_captured) - 처음 시작할 때든 방향 하나가 끝난 뒤든 같은
+            # 기준/문구를 쓴다. 예전엔 "레드닷을 원점에 두고 대기하세요 - 이동을 감지하면
+            # 자동으로..."처럼 "대기"와 "이동"을 한 문장에 섞어 써서 모순처럼 읽힌다는 지적
+            # (2026-09-16)이 있어, 정렬 대기 -> 정렬 완료를 명확히 분리된 두 단계로 안내한다.
+            if sm.idle_baseline_captured:
+                self._set_guidance("원점 정렬이 완료되었습니다 - 시험 방향으로 이동해주세요")
+            else:
+                self._set_guidance_stage(
+                    "원점 정렬을 위해 원점으로 이동하여 대기해주세요", sm.idle_wait_remaining_s
+                )
+            return
+
+        label = _DIRECTION_LABELS[direction]
+        if sm.phase == Phase.OUTBOUND:
+            # 목표(35MOA)에 도달한 뒤에도 바로 "측정 완료"로 넘어가지 않고, 실제로는
+            # 안정성이 확인될 때까지(3초) 기다리는 구간이 있다 - 그 대기 자체가 안 보이면
+            # "이동해주세요" 메시지와 "측정하였습니다" 메시지 사이가 비어 보인다는 지적
+            # (2026-09-16)에 따라, 목표 도달 여부(target_reached)로 구간을 나눠 카운트다운을
+            # 보여준다. mark_far_point_reached()가 도달 판정에 쓰는 것과 같은 여유값
+            # (MEASUREMENT_EPSILON_MOA)을 그대로 써서 기준을 통일한다.
+            target_reached = sm.max_primary_reached_moa >= stage2.travel_target_moa - sm.MEASUREMENT_EPSILON_MOA
+            if target_reached:
+                self._set_guidance_stage(
+                    "최대 도달 거리를 측정 중입니다 - 이 위치에서 잠시 대기해주세요 (또는 '이동 완료' 클릭)",
+                    sm.direction_wait_remaining_s,
+                )
+            else:
+                self._set_guidance(
+                    f"{label} 방향으로 이동 중입니다 - {stage2.travel_target_moa:.0f}MOA 이상 이동해주세요 "
+                    "(기계적 한계로 더 못 가면 '이동 완료' 클릭)"
+                )
+        elif sm.phase == Phase.RETURN:
+            last_primary = live_state.last_primary_moa if live_state is not None else None
+            if last_primary is not None and abs(last_primary) <= stage2.near_zero_band_moa:
+                self._set_guidance_stage(
+                    "백래쉬 측정을 위해 복귀 포인트에서 잠시 대기해주세요 (또는 '원점 복귀' 클릭)",
+                    sm.direction_wait_remaining_s,
+                )
+            else:
+                self._set_guidance("최대 도달 거리를 측정하였습니다 - 원점 방향으로 복귀해주세요")
+
+    # ---- 방향 버튼 라벨("시작"/"재시작") 동기화 (수동 버튼 클릭뿐 아니라 자동 인식/
+    # 데드클릭 토글 후에도 정확해야 하므로, "방금 바뀐 방향 하나만"이 아니라 매번 전체를
+    # 다시 읽어 반영한다) ----
+    def _sync_direction_status(self) -> None:
+        results_by_direction = {r.direction: r for r in self.vm.state_machine.direction_results}
+        for direction in _DIRECTION_ORDER:
+            if direction in results_by_direction:
+                self._direction_buttons[direction].setText(f"{_DIRECTION_LABELS[direction]} 재시작")
 
     # ---- 종합 결과 표 ----
     def _refresh_results_table(self) -> None:
@@ -199,11 +550,15 @@ class Stage2TravelTestView(QWidget):
         for row, check_type in enumerate(_CHECK_ROW_ORDER):
             row_statuses = []
             for col, direction in enumerate(_DIRECTION_ORDER, start=1):
-                text, status = self._cell_for(results_by_direction.get(direction), check_type)
-                item = QTableWidgetItem(text)
-                if status == "불량":
-                    item.setForeground(QColor("#c23c3c"))
-                self.results_table.setItem(row, col, item)
+                result = results_by_direction.get(direction)
+                if check_type == CheckType.DEAD_CLICK:
+                    status = self._set_dead_click_cell(row, col, direction, result)
+                else:
+                    text, status = self._cell_for(result, check_type)
+                    item = QTableWidgetItem(text)
+                    if status == "불량":
+                        item.setForeground(QColor("#c23c3c"))
+                    self.results_table.setItem(row, col, item)
                 if status is not None:
                     row_statuses.append(status)
 
@@ -219,6 +574,29 @@ class Stage2TravelTestView(QWidget):
                 result_item.setForeground(QColor("#c23c3c"))
             self.results_table.setItem(row, result_col, result_item)
 
+    def _set_dead_click_cell(
+        self, row: int, col: int, direction: TravelDirection, result: DirectionTestResult | None
+    ) -> str | None:
+        """데드클릭 행은 텍스트 대신 O/X 토글 체크박스로 표시한다(기본 X) - 시험 중 바로
+        누르면 흐름이 끊기므로, 방향이 끝난 뒤 결과표에서 한 번에 토글하기 위함(사용자 요청,
+        2026-09-16)."""
+        flagged = result is not None and any(c.check_type == CheckType.DEAD_CLICK for c in result.check_results)
+        checkbox = QCheckBox()
+        checkbox.setChecked(flagged)
+        checkbox.setEnabled(result is not None)
+        checkbox.toggled.connect(lambda checked, d=direction: self._on_dead_click_toggled(d, checked))
+
+        container = QWidget()
+        inner = QHBoxLayout(container)
+        inner.setContentsMargins(0, 0, 0, 0)
+        inner.setAlignment(Qt.AlignCenter)
+        inner.addWidget(checkbox)
+        self.results_table.setCellWidget(row, col, container)
+
+        if result is None:
+            return None
+        return "불량" if flagged else "합격"
+
     @staticmethod
     def _cell_for(result: DirectionTestResult | None, check_type: CheckType) -> tuple[str, str | None]:
         """표의 한 칸(방향 x 항목) 표시 문자열과 판정("합격"/"불량"/None=미평가)."""
@@ -226,11 +604,6 @@ class Stage2TravelTestView(QWidget):
             return "-", None
 
         check = next((c for c in result.check_results if c.check_type == check_type), None)
-        if check_type == CheckType.DEAD_CLICK:
-            if check is not None:
-                return "발생", "불량"
-            return "X", "합격"
-
         if check is None:
             return "-", None  # 앞선 항목에서 이미 불량이라 이 항목까지 도달 못함
         value_text = f"{check.measured_value:.1f}" if check.measured_value is not None else "-"

@@ -51,6 +51,25 @@ class DirectionTestResult:
 
 
 @dataclass
+class Stage2LiveState:
+    """2단계 화면에 실시간으로 보여줄 진행 상태 스냅샷 - 방향별 박스 버튼 없이도(자동 방향
+    인식) 작업자가 지금 상황을 볼 수 있어야 한다는 요청(2026-09-16)에 따라 추가.
+    current_direction이 None이면 대기 중(아직 방향 시험이 시작 안 됨)이라는 뜻이고, 이때는
+    나머지 필드도 의미가 없다(UI는 "-"로 표시)."""
+
+    current_direction: TravelDirection | None
+    current_x_moa: float | None = None
+    current_y_moa: float | None = None
+    baseline_moa: tuple[float, float] | None = None
+    max_primary_reached_moa: float | None = None
+    max_abs_cross_moa: float | None = None
+    # baseline 기준 상대 주축 값(가장 최근 샘플) - 원점 복귀 근접 여부(near_zero_band_moa)를
+    # 화면에서 판단해 안내 메시지를 정확히 고르는 데 쓴다(사용자 요청, 2026-09-16: "언제
+    # 무엇을 해야 하는지" 명확한 안내 필요).
+    last_primary_moa: float | None = None
+
+
+@dataclass
 class InspectionSession:
     scope_id: str
     operator: str = ""

@@ -7,6 +7,7 @@ from PySide6.QtWidgets import QApplication
 import pytest
 
 from app.viewmodels.inspection_viewmodel import InspectionViewModel
+from core.calibration.pixel_angle_calibration import CalibrationProfile
 from core.camera.mock_camera_service import MockCameraService
 from core.camera.playback_camera_service import PlaybackCameraService
 from core.config.settings import load_default_settings
@@ -123,6 +124,110 @@ def test_retest_direction_delegates_to_state_machine():
 
     assert vm.state_machine.direction_results == []
     assert TravelDirection.UP in vm.state_machine.direction_queue
+
+
+def test_state_machine_stability_factory_uses_settings_stability():
+    """settings.stability(StabilitySettings)는 예전엔 로드만 되고 실제로 아무 데도 연결
+    안 된 죽은 설정이었다 - 이번에 TravelTestStateMachine에 연결했다(사용자 요청,
+    2026-09-16)."""
+    vm = _make_vm()
+    detector = vm.state_machine._stability_factory()
+    assert detector.window_size_samples == vm.settings.stability.window_size_samples
+    assert detector.variance_threshold_moa2 == vm.settings.stability.variance_threshold_moa2
+    # StabilitySettings는 초(sec) 단위(설정 화면에서 다루기 쉽게, 사용자 요청 2026-09-16)지만
+    # StabilityDetector 내부는 ms 단위이므로 1000을 곱한 값과 비교한다.
+    assert detector.min_stable_duration_ms == vm.settings.stability.min_stable_duration_s * 1000.0
+
+
+def test_stage2_live_update_emitted_when_session_active_and_calibrated():
+    """방향별 박스 버튼이 더 이상 필수 조작이 아니게 되면서, 지금 무슨 일이 일어나고
+    있는지 화면으로 볼 수 있어야 한다는 요청(2026-09-16)에 따른 실시간 표시 시그널."""
+    vm = _make_vm()
+    vm.calibration.profile = CalibrationProfile(
+        camera_id="test",
+        origin_px_x=400,
+        origin_px_y=400,
+        px_per_moa_x=10.0,
+        px_per_moa_y=10.0,
+        scale_confirmed_x=True,
+        scale_confirmed_y=True,
+    )
+    vm._session_active = True
+
+    updates = []
+    vm.stage2_live_update.connect(lambda s: updates.append(s))
+
+    vm._on_frame(_make_dot_frame((400, 400)))  # 원점 근처, 아직 방향 임계값 안 넘음
+
+    assert len(updates) == 1
+    assert updates[0].current_direction is None
+
+
+def test_feed_position_not_called_before_session_started():
+    """"시험 시작"을 누르기 전(_session_active=False)에는 대기 baseline 추적이 시작되면
+    안 된다(사용자 요청, 2026-09-16) - stage2_live_update조차 emit되지 않아야 한다."""
+    vm = _make_vm()
+    vm.calibration.profile = CalibrationProfile(
+        camera_id="test",
+        origin_px_x=400,
+        origin_px_y=400,
+        px_per_moa_x=10.0,
+        px_per_moa_y=10.0,
+        scale_confirmed_x=True,
+        scale_confirmed_y=True,
+    )
+    assert vm._session_active is False
+
+    updates = []
+    vm.stage2_live_update.connect(lambda s: updates.append(s))
+
+    vm._on_frame(_make_dot_frame((400, 400)))
+
+    assert updates == []
+
+
+def test_feed_position_still_runs_for_manually_started_direction_without_session():
+    """"시험 시작"을 누르지 않고(스모크 테스트 스크립트처럼) 방향 버튼으로 바로
+    시작해도(state_machine.start_direction()), 이미 진행 중인 방향의 이동량 추적은
+    계속 동작해야 한다 - _session_active 게이트가 idle 대기 추적뿐 아니라 이미 시작된
+    방향까지 막아버리는 회귀가 있었다(실측/스모크 테스트로 확인, 2026-09-16)."""
+    vm = _make_vm()
+    vm.calibration.profile = CalibrationProfile(
+        camera_id="test",
+        origin_px_x=400,
+        origin_px_y=400,
+        px_per_moa_x=10.0,
+        px_per_moa_y=10.0,
+        scale_confirmed_x=True,
+        scale_confirmed_y=True,
+    )
+    assert vm._session_active is False
+    vm.state_machine.start_direction(TravelDirection.UP)  # "시험 시작" 없이 방향만 직접 시작
+
+    vm._on_frame(_make_dot_frame((400, 400)))  # baseline 캡처
+    vm._on_frame(_make_dot_frame((400, 350)))  # 위로 이동(픽셀 y 감소 = MOA 상승)
+
+    assert vm.state_machine.max_primary_reached_moa > 0  # feed_position이 실제로 동작함
+
+
+def test_finalize_inspection_writes_txt_report(tmp_path, monkeypatch):
+    """DB는 나중에(기능 검증 후) 별도로 다시 붙이기로 하고, 지금은 배포 대상 PC에 DB 설치
+    없이도 결과를 남길 수 있게 텍스트로 저장한다(사용자 요청, 2026-09-16)."""
+    import core.data.text_report as text_report
+
+    monkeypatch.setattr(text_report, "_DEFAULT_REPORTS_DIR", tmp_path)
+
+    vm = _make_vm(repository=None)
+    vm.configure_directions([TravelDirection.UP])
+    _pass_direction(vm, TravelDirection.UP)
+
+    vm.finalize_inspection()
+
+    files = list(tmp_path.glob("*.txt"))
+    assert len(files) == 1
+    assert vm.scope_id in files[0].name
+    content = files[0].read_text(encoding="utf-8")
+    assert "합격" in content or "불량" in content
 
 
 def _make_test_video(path: Path, n_frames: int = 10, fps: float = 20.0) -> None:

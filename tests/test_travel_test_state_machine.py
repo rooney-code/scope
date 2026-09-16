@@ -198,17 +198,73 @@ def test_measurements_are_corrected_relative_to_actual_start_point_not_absolute_
     assert travel.raw_measured_value == pytest.approx(35.1, abs=1e-9)
 
 
-def test_dead_click_manual_flag_fails_immediately():
+def test_set_dead_click_overrides_verdict_after_direction_completes():
+    """시험 중 바로 누르면 흐름이 끊기므로, 방향이 끝난 뒤 결과표에서 O/X로 토글하는 방식
+    (사용자 요청, 2026-09-16) - 켜면(True) 측정 결과와 무관하게 FAIL로 덮어쓰고, 끄면(False)
+    원래 측정 기반 판정으로 되돌아가야 한다."""
     m = _make_machine()
     m.configure([TravelDirection.UP])
     m.start_next_direction()
-
-    _feed_ramp(m, x_values=[0, 0, 0], y_values=[0, 5, 10])
-    m.flag_dead_click()
+    t = _feed_ramp(m, x_values=[0] * 8, y_values=[i * 5 for i in range(8)])
+    t = _feed_hold(m, x=0, y=35, n=6, t0=t)
+    t = _feed_ramp(m, x_values=[0] * 8, y_values=[35 - i * 5 for i in range(8)], t0=t)
+    _feed_hold(m, x=0, y=0, n=6, t0=t)
 
     result = m.direction_results[-1]
+    assert result.verdict == Verdict.PASS  # 측정만으로는 합격
+    assert m.overall_verdict == Verdict.PASS
+
+    m.set_dead_click(TravelDirection.UP, True)
+    result = m.direction_results[-1]
     assert result.verdict == Verdict.FAIL
-    assert result.check_results[0].check_type == CheckType.DEAD_CLICK
+    assert any(c.check_type == CheckType.DEAD_CLICK and c.status == Verdict.FAIL for c in result.check_results)
+    assert m.overall_verdict == Verdict.FAIL
+
+    m.set_dead_click(TravelDirection.UP, False)
+    result = m.direction_results[-1]
+    assert result.verdict == Verdict.PASS  # 원래 측정 기반 판정으로 복원
+    assert not any(c.check_type == CheckType.DEAD_CLICK for c in result.check_results)
+    assert m.overall_verdict == Verdict.PASS
+
+
+def test_set_dead_click_raises_for_direction_never_completed():
+    m = _make_machine()
+    with pytest.raises(RuntimeError):
+        m.set_dead_click(TravelDirection.UP, True)
+
+
+def test_auto_detects_up_direction_from_idle_movement():
+    """버튼 없이도, 원점 부근에서 안정적으로 대기하던 위치에서 한 축으로
+    auto_direction_threshold_moa 이상 벗어나면 자동으로 그 방향 시험이 시작돼야 한다
+    (사용자 요청, 2026-09-16 - 매 방향마다 버튼을 누르는 번거로움을 줄이기 위함). baseline은
+    이동 중인 지금 이 샘플이 아니라 직전에 안정적으로 멈춰 있던 위치를 그대로 써야 한다."""
+    m = _make_machine()
+    assert m.phase == Phase.IDLE
+    assert m.current_direction is None
+
+    t = _feed_hold(m, x=0.0, y=0.0, n=5, t0=0.0)  # 원점에서 안정적으로 대기(idle baseline 확정)
+    m.feed_position(PositionSample(timestamp_s=t, x_moa=0.0, y_moa=4.0))  # 3MOA 이상 위로 이동
+
+    assert m.phase == Phase.OUTBOUND
+    assert m.current_direction == TravelDirection.UP
+    assert m.baseline_moa == pytest.approx((0.0, 0.0))
+
+
+def test_auto_detects_right_direction_with_correct_sign():
+    m = _make_machine()
+    t = _feed_hold(m, x=0.0, y=0.0, n=5, t0=0.0)
+    m.feed_position(PositionSample(timestamp_s=t, x_moa=4.0, y_moa=0.0))
+
+    assert m.current_direction == TravelDirection.RIGHT
+
+
+def test_movement_below_auto_threshold_stays_idle():
+    m = _make_machine()
+    t = _feed_hold(m, x=0.0, y=0.0, n=5, t0=0.0)
+    m.feed_position(PositionSample(timestamp_s=t, x_moa=0.0, y_moa=1.0))  # 3MOA 미만
+
+    assert m.phase == Phase.IDLE
+    assert m.current_direction is None
 
 
 def test_abort_discards_without_recording_and_allows_restart():
@@ -369,7 +425,10 @@ def test_free_order_mode_one_failure_does_not_block_other_directions():
 
     assert m.direction_results[-1].verdict == Verdict.FAIL
     assert m.phase == Phase.DIRECTION_DONE  # 전체 종료로 안 넘어감(자유 순서 모드)
-    assert not m.is_ready_to_finalize
+    # 불량이 나거나 일부만 하고 끝내고 싶을 때도 종료할 수 있어야 한다는 요청(2026-09-16)에
+    # 따라, 완료된 방향이 하나라도 있고 지금 진행 중이 아니면 이미 종료 가능해야 한다 -
+    # "4방향 전부 시도"를 기다릴 필요 없음.
+    assert m.is_ready_to_finalize
 
     # UP이 불량이었어도 DOWN/LEFT/RIGHT를 자유롭게 시작 가능
     for direction, y_sign in [(TravelDirection.DOWN, -1), (TravelDirection.LEFT, -1), (TravelDirection.RIGHT, 1)]:
@@ -415,3 +474,24 @@ def test_finalize_before_all_directions_done_raises():
     assert not m.is_ready_to_finalize
     with pytest.raises(RuntimeError):
         m.finalize()
+
+
+def test_can_finalize_after_just_one_direction_when_nothing_in_progress():
+    """불량이 나거나 사용자가 일부 방향만 하고 끝내고 싶을 때도 종료할 수 있어야 한다는
+    요청(2026-09-16) - 4방향을 다 시도하지 않아도, 지금 진행 중인 방향이 없고 완료된
+    방향이 하나 이상이면 finalize()가 가능해야 하고, overall_verdict도 그 시점에 정확히
+    계산돼야 한다."""
+    m = _make_machine()
+    m.start_direction(TravelDirection.UP)
+    t = _feed_ramp(m, x_values=[0] * 8, y_values=[i * 5 for i in range(8)])
+    t = _feed_hold(m, x=0, y=35, n=6, t0=t)
+    t = _feed_ramp(m, x_values=[0] * 8, y_values=[35 - i * 5 for i in range(8)])
+    _feed_hold(m, x=0, y=0, n=6, t0=t)
+
+    assert m.phase == Phase.DIRECTION_DONE  # UP만 끝났고 나머지 3방향은 안 함
+    assert m.is_ready_to_finalize
+
+    m.finalize()
+
+    assert m.finalized
+    assert m.overall_verdict == Verdict.PASS  # 시도한 방향(UP)이 전부 합격

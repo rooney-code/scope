@@ -44,7 +44,7 @@ def main() -> None:
 
     camera.open()  # 스레드 캡처는 시작하지 않음 - 프레임을 직접 주입하므로 불필요
 
-    window.scope_id_input.setText("SCOPE-SMOKE-001")
+    window.stage2_view.scope_id_input.setText("SCOPE-SMOKE-001")
     assert vm.can_start_inspection(), "부품 ID 게이트 실패"
 
     vm.calibration.seed_from_auto_detection(
@@ -52,6 +52,12 @@ def main() -> None:
     )
     vm.calibration.profile.px_per_moa_x = camera.px_per_moa()
     vm.calibration.profile.px_per_moa_y = camera.px_per_moa()
+    # PixelAngleCalibration.is_ready는 원점뿐 아니라 양쪽 축 스케일 확정(scale_confirmed_x/y)도
+    # 요구한다 - 이걸 True로 안 하면 InspectionViewModel._on_frame()이 스케일 미확정으로 보고
+    # feed_position()을 아예 호출하지 않아(2026-09-14 도입된 안전장치) 이동량이 항상 0으로
+    # 측정되는 문제가 있었다(스모크 테스트로 확인, 2026-09-16).
+    vm.calibration.profile.scale_confirmed_x = True
+    vm.calibration.profile.scale_confirmed_y = True
 
     window.stage2_view._on_start_direction(TravelDirection.UP)
     app.processEvents()
@@ -59,7 +65,7 @@ def main() -> None:
 
     # 0 -> 35 MOA 점진 이동 (클릭 1회당 ~5moa 스텝, jump 게이팅 통과), 각 스텝에서 프레임 몇 장씩 주입.
     # 실시간 하드웨어에서는 목표 근처에서 잠깐 멈추면 feed_position()이 자동으로 평가하지만,
-    # 이 스크립트는 프레임을 즉시(sleep 없이) 주입해 min_stable_duration_ms(실제 설정 150ms)를
+    # 이 스크립트는 프레임을 즉시(sleep 없이) 주입해 min_stable_duration_ms(실제 설정 3초)를
     # 절대 못 채우므로 자동 감지가 트리거되지 않는다 - 그래서 뷰모델의 수동 확정 API를 직접
     # 호출해 같은 효과(이동량/쉬프트/드리프트 평가)를 낸다.
     for y in range(0, 36, 5):

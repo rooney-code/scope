@@ -28,12 +28,12 @@ class VideoSimulationView(QWidget):
         select_btn.clicked.connect(self._on_select_video)
         self._path_label = QLabel(_NO_VIDEO_TEXT)
 
-        self._play_btn = QPushButton("재생")
-        self._play_btn.setEnabled(False)
-        self._play_btn.clicked.connect(self._on_play)
-        self._pause_btn = QPushButton("일시정지")
-        self._pause_btn.setEnabled(False)
-        self._pause_btn.clicked.connect(self._on_pause)
+        # 재생/일시정지를 토글 버튼 하나로 - 두 버튼을 나란히 두는 대신, 지금 상태의
+        # 반대 동작을 라벨로 보여준다(사용자 요청, 2026-09-16).
+        self._is_playing = False
+        self._play_pause_btn = QPushButton("재생")
+        self._play_pause_btn.setEnabled(False)
+        self._play_pause_btn.clicked.connect(self._on_play_pause_toggle)
 
         self._frame_counter_label = QLabel("프레임: -/-")
         self._processing_time_label = QLabel("프레임 처리: 평균 - ms")
@@ -61,8 +61,7 @@ class VideoSimulationView(QWidget):
         select_row.addWidget(self._path_label, stretch=1)
 
         control_row = QHBoxLayout()
-        control_row.addWidget(self._play_btn)
-        control_row.addWidget(self._pause_btn)
+        control_row.addWidget(self._play_pause_btn)
         control_row.addWidget(self._frame_counter_label)
         control_row.addWidget(self._processing_time_label, stretch=1)
         control_row.addWidget(self._debug_log_checkbox)
@@ -80,15 +79,20 @@ class VideoSimulationView(QWidget):
             return
         self.vm.load_simulation_video(path)
         self._path_label.setText(Path(path).name)
-        self._play_btn.setEnabled(True)
-        self._pause_btn.setEnabled(True)
+        # load_simulation_video()는 항상 일시정지 상태로 시작한다(InspectionViewModel 참고) -
+        # 토글 버튼 라벨/상태를 그에 맞춘다.
+        self._is_playing = False
+        self._play_pause_btn.setText("재생")
+        self._play_pause_btn.setEnabled(True)
         self._seek_slider.setEnabled(True)
 
-    def _on_play(self) -> None:
-        self.vm.play_simulation_video()
-
-    def _on_pause(self) -> None:
-        self.vm.pause_simulation_video()
+    def _on_play_pause_toggle(self) -> None:
+        if self._is_playing:
+            self.vm.pause_simulation_video()
+        else:
+            self.vm.play_simulation_video()
+        self._is_playing = not self._is_playing
+        self._play_pause_btn.setText("일시정지" if self._is_playing else "재생")
 
     def _on_seek_released(self) -> None:
         self.vm.seek_simulation_video(self._seek_slider.value())
@@ -114,4 +118,9 @@ class VideoSimulationView(QWidget):
 
         avg_ms = self.vm.avg_frame_processing_ms
         if avg_ms is not None:
-            self._processing_time_label.setText(f"프레임 처리: 평균 {avg_ms:.1f} ms")
+            skip_n = self.vm.current_frame_skip_n
+            # 처리 시간이 느려져 프레임을 건너뛰기 시작하면(스킵 없으면 skip_n=1) 그 사실을
+            # 같이 보여준다 - 안 보이면 왜 반응이 느려졌는지 알 수 없다는 우려(사용자 요청,
+            # 2026-09-16).
+            skip_text = "매 프레임 처리" if skip_n <= 1 else f"{skip_n}프레임당 1회 처리"
+            self._processing_time_label.setText(f"프레임 처리: 평균 {avg_ms:.1f} ms ({skip_text})")

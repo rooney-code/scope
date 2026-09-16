@@ -4,7 +4,6 @@ from PySide6.QtWidgets import QApplication
 from app.views.stage1_alignment_view import Stage1AlignmentView, _NO_CALIBRATION_MSG, _SCALE_UNCONFIRMED_MSG
 from core.calibration.grid_auto_detector import GridDetectionResult
 from core.calibration.pixel_angle_calibration import PixelAngleCalibration
-from core.config.settings import Stage1Settings
 from core.vision.red_dot_detector import DetectionResult
 
 
@@ -17,7 +16,7 @@ def qapp():
 def _make_view() -> Stage1AlignmentView:
     # 최상위 위젯은 .show() 전까지 항상 isVisible()==False다(자식의 setVisible(True)
     # 여부와 무관) - 경고 라벨 표시 여부를 isVisible()로 검증하려면 실제로 보여야 한다.
-    view = Stage1AlignmentView(Stage1Settings(), on_ready_to_proceed=lambda: None)
+    view = Stage1AlignmentView()
     view.show()
     return view
 
@@ -33,13 +32,12 @@ def test_warning_shown_when_no_calibration_set():
     view.on_detection(DetectionResult(found=True, center_px=(10.0, 10.0)))
     assert view.calibration_warning_label.isVisible()
     assert view.calibration_warning_label.text() == _NO_CALIBRATION_MSG
-    assert view.offset_label.text() == "오차: -"  # 갱신되지 않아야 함
 
 
 def test_warning_shown_when_scale_unconfirmed():
     """그리드 자동 검출로 원점만 찾고(px_per_moa가 아직 임시값 1.0) 클릭 스냅을 안 했으면,
-    "스케일 미확정" 경고를 보여야 하고 오차는 계산하지 않아야 한다(실측으로 확인된 문제:
-    이 상태로 방치하면 터무니없는 MOA 숫자가 나옴, 2026-09-14)."""
+    "스케일 미확정" 경고를 보여야 한다(실측으로 확인된 문제: 이 상태로 방치하면 터무니없는
+    MOA 숫자가 나옴, 2026-09-14)."""
     view = _make_view()
     calib = PixelAngleCalibration()
     calib.seed_from_auto_detection("CAM", GridDetectionResult(found=True, origin_px=(100.0, 100.0)))
@@ -49,12 +47,10 @@ def test_warning_shown_when_scale_unconfirmed():
 
     assert view.calibration_warning_label.isVisible()
     assert view.calibration_warning_label.text() == _SCALE_UNCONFIRMED_MSG
-    assert view.offset_label.text() == "오차: -"  # 갱신되지 않아야 함
 
 
 def test_warning_hidden_once_fully_calibrated():
-    """원점 + 양쪽 축 스케일이 모두 확정되면 경고가 사라지고, 정상적으로 오차가 갱신돼야
-    한다."""
+    """원점 + 양쪽 축 스케일이 모두 확정되면 경고가 사라져야 한다."""
     view = _make_view()
     calib = PixelAngleCalibration()
     calib.seed_from_auto_detection("CAM", GridDetectionResult(found=True, origin_px=(100.0, 100.0)))
@@ -65,4 +61,3 @@ def test_warning_hidden_once_fully_calibrated():
     view.on_detection(DetectionResult(found=True, center_px=(160.0, 100.0)))
 
     assert not view.calibration_warning_label.isVisible()
-    assert "x=10.00 MOA" in view.offset_label.text()

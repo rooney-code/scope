@@ -60,3 +60,14 @@ class StabilityDetector:
             return StabilityState(is_stable=False)
 
         return StabilityState(is_stable=True, stable_position=(statistics.mean(xs), statistics.mean(ys)))
+
+    def remaining_hold_s(self, now_s: float) -> float | None:
+        """지금 "안정 유지 시간"을 재는 중이면(윈도우가 다 찼고 분산 조건을 만족해서 안정
+        시작 시각이 잡혀 있으면) min_stable_duration_ms까지 남은 시간(초)을 반환한다. 아직
+        추적을 시작하지 못했으면(윈도우 미충족 또는 방금 흔들려서 리셋됨) None - UI가
+        "대기 중"과 "카운트다운 중"을 구분해서 보여줄 수 있게 한다(사용자 요청, 2026-09-16:
+        3초 대기시간을 메시지에 카운트다운으로 표시)."""
+        if self._stable_since_s is None:
+            return None
+        remaining_ms = self.min_stable_duration_ms - (now_s - self._stable_since_s) * 1000.0
+        return max(0.0, remaining_ms / 1000.0)

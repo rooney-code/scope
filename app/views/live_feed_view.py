@@ -124,11 +124,18 @@ class LiveFeedView(QWidget):
         self._info_text_checkbox.setChecked(True)
         self._info_text_checkbox.stateChanged.connect(self._on_overlay_toggle)
 
+        # RX/PROC FPS 표시도 다른 오버레이처럼 켜고 끌 수 있어야 한다는 요청(2026-09-16)에
+        # 따라 체크박스를 추가한다.
+        self._fps_checkbox = QCheckBox("FPS")
+        self._fps_checkbox.setChecked(True)
+        self._fps_checkbox.stateChanged.connect(self._on_overlay_toggle)
+
         self._overlay_checkboxes = [
             self._origin_axes_checkbox,
             self._red_dot_checkbox,
             self._guide_line_checkbox,
             self._info_text_checkbox,
+            self._fps_checkbox,
         ]
 
         show_all_btn = QPushButton("전체 보이기")
@@ -141,12 +148,21 @@ class LiveFeedView(QWidget):
         zoom_row.addWidget(self._zoom_slider)
         zoom_row.addWidget(self._zoom_label)
 
-        overlay_row = QHBoxLayout()
-        overlay_row.addWidget(QLabel("오버레이 표시:"))
-        for checkbox in self._overlay_checkboxes:
-            overlay_row.addWidget(checkbox)
-        overlay_row.addWidget(show_all_btn)
-        overlay_row.addWidget(hide_all_btn)
+        # 체크박스 5개 + 라벨 + 버튼 2개가 한 줄에 다 안 들어가서 두 줄로 나눈다(사용자
+        # 요청, 2026-09-16) - 1줄: 원점/기준선・안내선・레드닷, 2줄: 오차정보・FPS(+버튼).
+        overlay_row1 = QHBoxLayout()
+        overlay_row1.addWidget(QLabel("오버레이 표시:"))
+        overlay_row1.addWidget(self._origin_axes_checkbox)
+        overlay_row1.addWidget(self._guide_line_checkbox)
+        overlay_row1.addWidget(self._red_dot_checkbox)
+        overlay_row1.addStretch(1)
+
+        overlay_row2 = QHBoxLayout()
+        overlay_row2.addWidget(self._info_text_checkbox)
+        overlay_row2.addWidget(self._fps_checkbox)
+        overlay_row2.addWidget(show_all_btn)
+        overlay_row2.addWidget(hide_all_btn)
+        overlay_row2.addStretch(1)
 
         # 확대/오버레이 컨트롤은 이 위젯 자신의 레이아웃에 넣지 않고 별도 위젯(controls_widget)
         # 으로 빼서 밖에서(MainWindow) 원하는 위치에 배치할 수 있게 한다 - 원래 영상 아래에
@@ -158,13 +174,19 @@ class LiveFeedView(QWidget):
         controls_layout = QVBoxLayout(self.controls_widget)
         controls_layout.setContentsMargins(0, 0, 0, 0)
         controls_layout.addLayout(zoom_row)
-        controls_layout.addLayout(overlay_row)
+        controls_layout.addLayout(overlay_row1)
+        controls_layout.addLayout(overlay_row2)
 
         layout = QVBoxLayout(self)
         layout.addWidget(self._image_container, stretch=1)
 
         self._last_frame: np.ndarray | None = None
         self._last_detection: DetectionResult | None = None
+        # 수신/처리 FPS - 처리 시간이 느린 환경에서 일부 프레임을 건너뛰기 시작하면(적응형
+        # 프레임 스킵, InspectionViewModel._current_frame_skip_n 참고) 실제로 얼마나
+        # 건너뛰고 있는지 라이브 화면에서 바로 보여달라는 요청(2026-09-16)에 따라 추가.
+        self._received_fps = 0.0
+        self._processed_fps = 0.0
         self._zoom_level = 1  # 1~5, 커질수록 view_range_moa가 좁아짐(더 확대)
         # True인 동안은 캘리브레이션 탭이어도 크롭하지 않고 원본 전체를 보여준다 - "그리드
         # 수동 검출"로 원점을 새로 클릭해야 할 때, 이미 크롭된(어쩌면 완전히 엉뚱한 위치를
@@ -292,6 +314,17 @@ class LiveFeedView(QWidget):
         if self._last_frame is not None:
             self._render(self._last_frame, result)
 
+    def on_fps_stats(self, received_fps: float, processed_fps: float) -> None:
+        # 값만 저장하고 여기서 다시 그리지 않는다 - InspectionViewModel이 이 시그널을
+        # frame_ready와 거의 같은 빈도(프레임마다, 건너뛴 프레임 포함)로 내보내는데, 매번
+        # 강제로 재렌더(크롭/리사이즈/그리기/QImage 변환까지 포함하는 무거운 작업)하면
+        # 프레임당 렌더 횟수가 최대 3배(on_frame + on_detection + 이 시그널 x2)까지 늘어나
+        # 프로그램이 눈에 띄게 느려지는 회귀가 있었다(사용자 지적, 2026-09-16). 어차피 다음
+        # on_frame()/on_detection() 호출이 곧바로(같은 프레임 처리 안에서) 뒤따라와 최신
+        # 숫자로 다시 그려주므로, 한두 프레임 정도 지연되는 건 체감되지 않는다.
+        self._received_fps = received_fps
+        self._processed_fps = processed_fps
+
     def _render(self, frame_bgr: np.ndarray, detection: DetectionResult | None) -> None:
         # 원점(캘리브레이션) 유무/모드에 따라 정사각 강제 여부가 달라지므로(_relayout_square_image
         # 참고) 매 프레임 다시 반영한다 - 시험 도중 캘리브레이션이 막 완료된 경우 등, 창 크기
@@ -348,6 +381,8 @@ class LiveFeedView(QWidget):
                     max_moa_range=self._current_view_range_moa(),
                 )
 
+            self._draw_fps_text(display)
+
             rgb = cv2.cvtColor(display, cv2.COLOR_BGR2RGB)
             h, w, ch = rgb.shape
             qimg = QImage(rgb.data, w, h, ch * w, QImage.Format_RGB888)
@@ -394,6 +429,7 @@ class LiveFeedView(QWidget):
             self._draw_out_of_range_banner(display)
 
         self._draw_offset_text(display, detection, profile, show_info_text)
+        self._draw_fps_text(display)
 
         rgb = cv2.cvtColor(display, cv2.COLOR_BGR2RGB)
         h, w, ch = rgb.shape
@@ -427,7 +463,11 @@ class LiveFeedView(QWidget):
     def _draw_offset_text(
         self, display: np.ndarray, detection: DetectionResult | None, profile, show_on_image: bool
     ) -> None:
-        """레드닷이 원점 기준 좌우/상하로 몇 MOA 벗어나 있는지 영상 좌하단에 표시.
+        """레드닷이 원점 기준 좌우/상하로 몇 MOA 벗어나 있는지 영상 우측 상단에 표시.
+
+        원래 좌측 하단에 있었는데, 작업자 시선이 화면 위쪽(레드닷/원점 부근)에 머무는데
+        아래쪽을 봐야 해서 불편하다는 지적(2026-09-16)에 따라 우측 상단으로 옮겼다 - 좌측
+        상단은 RX/PROC FPS(_draw_fps_text)가 쓰므로 겹치지 않게 반대쪽에 둔다.
 
         cv2.putText는 한글 글리프가 없어 깨지므로 영문 라벨(R/L/U/D)만 사용한다. 같은 값을
         보여주는 Qt 라벨은 시험 진행 탭의 Stage1AlignmentView.offset_label과 중복이라
@@ -442,21 +482,49 @@ class LiveFeedView(QWidget):
         ud = "U" if y_moa >= 0 else "D"
         text = f"{lr} {abs(x_moa):.2f} MOA  /  {ud} {abs(y_moa):.2f} MOA"
 
-        h, w = display.shape[:2]
+        w = display.shape[1]
         font_scale = max(1.0, w / 1400)  # 해상도에 비례해 글자 크기 자동 조절 (가독성 확보)
         thickness = max(2, int(font_scale * 2))
         (text_w, text_h), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, font_scale, thickness)
         pad = 10
+        x0 = w - text_w - pad - 6
         cv2.rectangle(
             display,
-            (pad - 6, h - text_h - pad - 10),
-            (pad + text_w + 6, h - pad + 6),
+            (x0 - 6, pad - 6),
+            (x0 + text_w + 6, pad + text_h + 10),
             (0, 0, 0),
             -1,
         )
         cv2.putText(
-            display, text, (pad, h - pad), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (0, 255, 255), thickness
+            display, text, (x0, pad + text_h), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (0, 255, 255), thickness
         )
+
+    def _draw_fps_text(self, display: np.ndarray) -> None:
+        """수신 FPS(카메라에서 실제로 들어오는 속도)/처리 FPS(검출+상태기계를 실제로
+        처리한 속도)를 영상 좌측 상단에 표시 - 처리 시간이 느린 환경에서 적응형 프레임
+        스킵(InspectionViewModel._current_frame_skip_n)이 실제로 얼마나 건너뛰고 있는지
+        라이브 화면에서 바로 보고 싶다는 요청(2026-09-16)에 따라 추가. cv2.putText는
+        한글 글리프가 없어 영문 라벨만 사용한다(_draw_offset_text와 동일한 이유). 다른
+        오버레이처럼 "FPS" 체크박스로 켜고 끌 수 있다 - 캘리브레이션 탭에서도 이 체크박스가
+        그대로 적용된다(사용자 요청, 2026-09-16).
+        """
+        if not self._fps_checkbox.isChecked():
+            return
+        # 두 값을 위아래로 보고 싶다는 요청(2026-09-16)에 따라 한 줄이 아니라 두 줄로 그린다.
+        lines = [f"RX FPS: {self._received_fps:.1f}", f"PROC FPS: {self._processed_fps:.1f}"]
+        w = display.shape[1]
+        font_scale = max(0.7, w / 1600)
+        thickness = max(2, int(font_scale * 2))
+        sizes = [cv2.getTextSize(line, cv2.FONT_HERSHEY_SIMPLEX, font_scale, thickness)[0] for line in lines]
+        text_w = max(size[0] for size in sizes)
+        line_h = max(size[1] for size in sizes)
+        line_gap = int(line_h * 0.6)
+        pad = 10
+        box_h = len(lines) * line_h + (len(lines) - 1) * line_gap + 10
+        cv2.rectangle(display, (pad - 6, pad - 6), (pad + text_w + 6, pad + box_h), (0, 0, 0), -1)
+        for i, line in enumerate(lines):
+            y = pad + line_h + i * (line_h + line_gap)
+            cv2.putText(display, line, (pad, y), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (0, 255, 0), thickness)
 
     def _scale_to_display_size(self, frame: np.ndarray) -> tuple[np.ndarray, tuple[float, float, float]]:
         """캘리브레이션 모드용: 크롭 없이 원본 전체를 display_target_size에 맞게 비율 유지

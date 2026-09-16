@@ -16,10 +16,16 @@ from core.camera.camera_service import CameraInfo, FrameCallback, ICameraService
 
 
 class MockCameraService(ICameraService):
-    def __init__(self, width: int = 1280, height: int = 960, fps: float = 30.0) -> None:
+    def __init__(
+        self, width: int = 1280, height: int = 960, fps: float = 30.0, render_style: str = "grid"
+    ) -> None:
         self._width = width
         self._height = height
         self._fps = fps
+        # "grid": 기존 초록 배경+격자+눈금(스모크 테스트/개발용). "simple": 검은 배경 +
+        # 레드닷만(시뮬레이션 탭 - 배경 이미지 없이도 절차를 검증할 수 있어야 한다는 요청,
+        # 2026-09-16). 원점/좌표축 표시는 LiveFeedView의 오버레이가 대신 그려준다.
+        self._render_style = render_style
         self._running = False
         self._thread: threading.Thread | None = None
         self._lock = threading.Lock()
@@ -86,33 +92,41 @@ class MockCameraService(ICameraService):
         h, w = self._height, self._width
         frame = np.zeros((h, w, 3), dtype=np.uint8)
 
-        # 초록 배경(비네팅 느낌으로 중심이 밝게)
-        yy, xx = np.mgrid[0:h, 0:w]
-        cx, cy = self._origin
-        dist = np.sqrt((xx - cx) ** 2 + (yy - cy) ** 2)
-        max_dist = np.sqrt(cx**2 + cy**2)
-        g = np.clip(80 - (dist / max_dist) * 80, 0, 255).astype(np.uint8)
-        frame[..., 1] = g  # G channel
+        if self._render_style == "grid":
+            # 초록 배경(비네팅 느낌으로 중심이 밝게)
+            yy, xx = np.mgrid[0:h, 0:w]
+            cx, cy = self._origin
+            dist = np.sqrt((xx - cx) ** 2 + (yy - cy) ** 2)
+            max_dist = np.sqrt(cx**2 + cy**2)
+            g = np.clip(80 - (dist / max_dist) * 80, 0, 255).astype(np.uint8)
+            frame[..., 1] = g  # G channel
 
-        # 십자선
-        cv2.line(frame, (0, cy), (w, cy), (30, 60, 30), 1)
-        cv2.line(frame, (cx, 0), (cx, h), (30, 60, 30), 1)
+            # 십자선
+            cv2.line(frame, (0, cy), (w, cy), (30, 60, 30), 1)
+            cv2.line(frame, (cx, 0), (cx, h), (30, 60, 30), 1)
 
-        # tick (10 단위 MOA 간격)
-        for m in range(-35, 36, 10):
-            if m == 0:
-                continue
-            tx = int(cx + m * self._px_per_moa)
-            ty = int(cy - m * self._px_per_moa)
-            cv2.line(frame, (tx, cy - 6), (tx, cy + 6), (30, 60, 30), 1)
-            cv2.line(frame, (cx - 6, ty), (cx + 6, ty), (30, 60, 30), 1)
+            # tick (10 단위 MOA 간격)
+            for m in range(-35, 36, 10):
+                if m == 0:
+                    continue
+                tx = int(cx + m * self._px_per_moa)
+                ty = int(cy - m * self._px_per_moa)
+                cv2.line(frame, (tx, cy - 6), (tx, cy + 6), (30, 60, 30), 1)
+                cv2.line(frame, (cx - 6, ty), (cx + 6, ty), (30, 60, 30), 1)
+        # "simple"이면 위 배경/격자를 그리지 않고 검은 배경 그대로 둔다.
 
         # 레드닷 (호박색, 중심 밝고 발광)
         dot = (int(self._dot_px[0]), int(self._dot_px[1]))
         # 단일 블롭으로 단순화 (별도의 외곽 링을 그리면 특정 위치에서 내부 원과 분리된
         # 컨투어로 잡혀 다중 블롭 아티팩트가 생기는 경우가 있어 제거함 - Mock 전용 이슈,
         # 실제 검출 튜닝은 실기 영상으로 진행)
-        if self._dot_elliptical:
+        #
+        # 코멧테일(타원) 왜곡은 "grid" 스타일(검출 알고리즘 자체를 실측처럼 검증하는 용도)
+        # 에서만 흉내낸다. 이 타원은 항상 가로로 긴 고정 모양(10,6)이라 실제 광학 특성(이동
+        # 방향 쪽으로 늘어짐)과 무관하게 위/아래로 이동해도 가로로 늘어나 보인다 - 절차
+        # 자체를 검증하는 "simple"(시뮬레이션 탭)에서는 방향 착시를 주지 않도록 항상 원으로
+        # 그린다(사용자 지적, 2026-09-16: 위로 이동했는데 가로로 늘어나는 게 이상해 보임).
+        if self._render_style == "grid" and self._dot_elliptical:
             cv2.ellipse(frame, dot, (10, 6), 0, 0, 360, (40, 160, 230), -1)
         else:
             cv2.circle(frame, dot, 8, (40, 160, 230), -1)

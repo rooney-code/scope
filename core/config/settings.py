@@ -150,12 +150,14 @@ class DetectionSettings:
     # 매 프레임 로그를 남기면 정상 운영 중엔 콘솔이 감당 못 할 정도로 쏟아지므로, 문제를
     # 재현/분석할 때(특히 영상 시뮬레이션으로 특정 프레임을 반복 확인할 때)만 켠다.
     debug_logging: bool = False
-
-
-@dataclass
-class Stage1Settings:
-    tolerance_moa: float = 0.5
-    stable_duration_ms: float = 500.0
+    # 검출+상태기계 처리 시간(avg_frame_processing_ms)이 카메라 프레임 주기보다 길어지면
+    # (개발 PC는 평균 3ms지만 실제 운용 PC는 더 느릴 수 있다는 우려, 사용자 요청 2026-09-16)
+    # 계속 밀리기만 하지 않도록 일부 프레임을 건너뛴다 - 처리 시간이 여유 있으면 건너뛰지
+    # 않고 매 프레임 처리하고, 느려질수록 필요한 만큼만 건너뛰되 이 값(기본 10)을 넘겨
+    # 건너뛰지는 않는다 - "아무리 느려도 N프레임당 1개는 처리한다"는 마지노선. 영상 표시
+    # (frame_ready)는 이 스킵과 무관하게 항상 매 프레임 그대로 나간다 - 건너뛴 프레임 동안은
+    # 오버레이(레드닷 마커 등)만 마지막 처리 결과로 고정되고, 영상 자체는 끊기지 않는다.
+    adaptive_frame_skip_max: int = 10
 
 
 @dataclass
@@ -170,13 +172,27 @@ class Stage2Settings:
     # 잠깐 멈추는 것과는 확실히 구분되면서도 불량 판정 범위는 덮도록 여유를 둔 값.
     near_zero_band_moa: float = 5.0
     stop_on_failure_scope: str = "entire_inspection"  # "entire_inspection" | "direction_only"
+    # 시험 시작 버튼/방향 버튼 없이도, 원점 부근에서 안정적으로 멈춰 있던 마지막 위치(대기
+    # baseline) 대비 한 축(x 또는 y)으로 이만큼 벗어나면 그 축+부호로 방향을 자동 판정해
+    # 해당 방향 시험을 시작한다(사용자 요청, 2026-09-16 - 매 방향마다 버튼을 누르는 번거로움을
+    # 줄이기 위함). 1차는 단순 임계값 방식 - 노이즈로 인한 오탐지가 실측으로 확인되면 방향
+    # 일관성 체크 등을 추가할 수 있음.
+    auto_direction_threshold_moa: float = 3.0
 
 
 @dataclass
 class StabilitySettings:
     window_size_samples: int = 8
     variance_threshold_moa2: float = 0.01
-    min_stable_duration_ms: float = 150.0
+    # TravelTestStateMachine의 원점 복귀/목표 도달 자동 판정과 대기 중 baseline 추적에 쓰인다.
+    # 예전엔 여기 값이 실제로 어디에도 연결되지 않은 죽은 설정이었다(TravelTestStateMachine이
+    # 150ms로 하드코딩된 자체 기본값을 썼음) - 이번에 연결했다(사용자 요청, 2026-09-16).
+    # 작업자가 프로그램을 최대한 안 건드리고 자동화하려 할 때, "여기서 멈췄다"는 신호를 주는
+    # 데 필요한 시간으로 3초를 기본값으로 잡았다 - 너무 짧으면 이동 중 손 고쳐잡는 것도
+    # 멈춤으로 오판할 수 있음. 단위는 초(sec) - ms 단위는 설정 화면에서 다루기 어색하다는
+    # 지적(2026-09-16)에 따라 바꿨다. StabilityDetector 자체는 내부적으로 여전히 ms 단위를
+    # 쓰므로(정밀한 단위 테스트에 유리) 경계(InspectionViewModel)에서 1000을 곱해 변환한다.
+    min_stable_duration_s: float = 3.0
 
 
 @dataclass
@@ -190,7 +206,6 @@ class Settings:
     database: DatabaseSettings = field(default_factory=DatabaseSettings)
     calibration: CalibrationSettings = field(default_factory=CalibrationSettings)
     detection: DetectionSettings = field(default_factory=DetectionSettings)
-    stage1: Stage1Settings = field(default_factory=Stage1Settings)
     stage2: Stage2Settings = field(default_factory=Stage2Settings)
     stability: StabilitySettings = field(default_factory=StabilitySettings)
     direction_queue: DirectionQueueSettings = field(default_factory=DirectionQueueSettings)
@@ -206,7 +221,6 @@ class Settings:
             database=DatabaseSettings(**data.get("database", {})),
             calibration=CalibrationSettings(**data.get("calibration", {})),
             detection=DetectionSettings(**_tuplify_hsv(data.get("detection", {}))),
-            stage1=Stage1Settings(**data.get("stage1", {})),
             stage2=Stage2Settings(**data.get("stage2", {})),
             stability=StabilitySettings(**data.get("stability", {})),
             direction_queue=DirectionQueueSettings(**data.get("direction_queue", {})),
