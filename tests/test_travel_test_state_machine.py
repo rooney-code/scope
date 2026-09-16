@@ -105,7 +105,15 @@ def test_travel_amount_shortfall_requires_manual_confirmation():
     assert result.verdict == Verdict.FAIL
     assert result.check_results[0].check_type == CheckType.TRAVEL_AMOUNT
     assert result.check_results[0].status == Verdict.FAIL
-    assert len(result.check_results) == 1  # 이동량에서 즉시 종료, 나머지 체크 없음
+    # 이동량이 불합격이어도 측정 가능한 쉬프트/드리프트는 계속 기록한다(백래쉬만 원점 복귀가
+    # 필요해서 기록하지 않음) - 사용자 요청, 2026-09-16: "하나의 불량이 발생하면 나머지
+    # 항목은 기록하지 않는" 문제 개선. 원점 복귀를 강제로 요구하지 않는 절충안이라 백래쉬
+    # 항목만 없다.
+    assert {c.check_type for c in result.check_results} == {
+        CheckType.TRAVEL_AMOUNT,
+        CheckType.SHIFT,
+        CheckType.DRIFT,
+    }
 
 
 def test_shift_exceeds_threshold_fails_automatically():
@@ -122,8 +130,10 @@ def test_shift_exceeds_threshold_fails_automatically():
     assert m.phase == Phase.INSPECTION_DONE
     result = m.direction_results[-1]
     assert result.verdict == Verdict.FAIL
-    assert result.check_results[-1].check_type == CheckType.SHIFT
-    assert result.check_results[-1].status == Verdict.FAIL
+    # 쉬프트가 불합격이어도 (순서상 뒤에 계산되는) 드리프트까지 계속 기록되므로, 이제
+    # check_results의 마지막 항목이 꼭 실패한 항목이라는 보장이 없다 - 타입으로 찾는다.
+    shift_check = next(c for c in result.check_results if c.check_type == CheckType.SHIFT)
+    assert shift_check.status == Verdict.FAIL
 
 
 def test_drift_exceeds_threshold_fails_automatically():
@@ -262,6 +272,24 @@ def test_movement_below_auto_threshold_stays_idle():
     m = _make_machine()
     t = _feed_hold(m, x=0.0, y=0.0, n=5, t0=0.0)
     m.feed_position(PositionSample(timestamp_s=t, x_moa=0.0, y_moa=1.0))  # 3MOA 미만
+
+    assert m.phase == Phase.IDLE
+    assert m.current_direction is None
+
+
+def test_idle_stable_position_far_from_origin_is_not_adopted_as_baseline():
+    """대기 baseline은 "원점 부근"에서 안정된 경우에만 채택해야 한다 - 방향 시험이 목표
+    도달 전(예: 쉬프트 초과)에 조기 종료돼 레드닷이 원점이 아닌 곳(예: 35MOA 부근)에 멈춰
+    있으면, 그 자리가 그대로 baseline이 돼버려 (a) "원점 정렬 완료"로 잘못 안내되고
+    (b) 거기서 조금만 더 움직여도 엉뚱한 지점을 기준으로 새 방향 시험이 자동 시작되는 버그가
+    실측으로 확인됐다(2026-09-16). near_zero_band_moa(5.0) 밖인 y=35에서 안정돼도
+    idle_baseline_captured가 False로 남고, 거기서 더 움직여도 자동으로 방향이 시작되면
+    안 된다."""
+    m = _make_machine()
+    t = _feed_hold(m, x=0.0, y=35.0, n=5, t0=0.0)  # 원점이 아닌 곳(목표 근처)에서 안정적으로 대기
+    assert not m.idle_baseline_captured
+
+    m.feed_position(PositionSample(timestamp_s=t, x_moa=0.0, y_moa=39.0))  # 그 자리에서 4MOA 더 이동
 
     assert m.phase == Phase.IDLE
     assert m.current_direction is None

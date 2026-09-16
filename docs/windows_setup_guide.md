@@ -27,7 +27,7 @@
   있습니다 - 90일 등 평가 기간 동안 라이선스 없이 테스트 가능.
 
 **VM으로 확인 가능한 것 / 불가능한 것**:
-- 가능: 파이썬 설치, `pip install`, `--mock`/`--playback` 모드로 화면·검사 흐름 확인,
+- 가능: 파이썬 설치, `pip install`, `--mock` 모드(+ 영상 선택으로 재생 테스트)로 화면·검사 흐름 확인,
   `pytest` 전체 테스트, PyInstaller로 `.exe` 빌드까지 - 이 문서와 `packaging_guide.md`의
   대부분 단계는 VM만으로 충분합니다.
 - 어려움/권장하지 않음: **실제 IDS 카메라 연동 테스트**. USB 카메라를 VM에 패스스루할 수는
@@ -243,10 +243,9 @@ IDS가 별도 배포하는 `ids-peak-afl`(Auto-Feature Library) 패키지는 이
   python -m app.main --mock
   ```
 - **실제 캡처한 이미지/영상 파일로 재생 테스트** (카메라 없이, 실제 자료로 검출 정확도 확인):
-  ```
-  python -m app.main --playback "C:\경로\밝은화면.png"
-  python -m app.main --playback "C:\경로\시험영상.mp4"
-  ```
+  `--mock`으로 켠 뒤 "시험 진행" 탭의 "영상 선택" 버튼으로 파일을 불러오면 됩니다 - 예전엔
+  시작 시점에 `--playback` 옵션으로 지정해야 했지만, 이제 프로그램을 켠 뒤 아무 때나(카메라
+  종류와 무관하게) 불러올 수 있어 이 옵션은 제거했습니다(2026-09-16).
 - **실제 IDS 카메라로 실행**:
   ```
   python -m app.main
@@ -255,6 +254,8 @@ IDS가 별도 배포하는 `ids-peak-afl`(Auto-Feature Library) 패키지는 이
   ```
   python -m app.main --device-serial 1234567890
   ```
+  카메라를 못 찾으면(드라이버 미설치/케이블 미연결 등) 프로그램이 죽지 않고 "카메라 입력이
+  없어서 시험 모드로 진입합니다" 안내와 함께 자동으로 가상 카메라로 전환됩니다.
 
 ## 8. 테스트 코드 실행 (로직 검증)
 
@@ -315,7 +316,7 @@ VM 안내(0번 항목)에서 소개한 방식을 로컬 PC에도 그대로 적�
 | 증상 | 원인/해결 |
 |---|---|
 | `python`이 인식되지 않음 | 설치 시 PATH 추가를 체크하지 않았을 가능성 - Python 재설치 시 체크 |
-| `ModuleNotFoundError: No module named 'ids_peak'` | IDS peak SDK Python 패키지가 설치 안 됨 - 5번 항목 참고, `--mock`/`--playback`으로 우선 진행 가능 |
+| `ModuleNotFoundError: No module named 'ids_peak'` | IDS peak SDK Python 패키지가 설치 안 됨 - 5번 항목 참고, `--mock`으로 우선 진행 가능 |
 | `pyodbc.Error`로 DB 연결 실패 | ODBC Driver 미설치, 서버 주소/계정 오류, 방화벽/VPN 문제 확인 |
 | 카메라 화면이 안 나옴 | IDS peak Cockpit에서 먼저 카메라가 잡히는지 확인 (드라이버/USB 문제 여부 판단) |
 | 화면이 너무 작게/크게 나옴 | 아직 세부 UI 레이아웃은 다듬는 중 - 창 크기를 직접 조절하거나 알려주시면 개선하겠습니다 |

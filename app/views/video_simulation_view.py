@@ -1,7 +1,7 @@
 """실장비 없이 녹화 영상(.avi)으로 시험 절차를 검증하기 위한 컨트롤.
 
 "시험 진행" 탭 하단에 항상 노출된다(카메라 종류와 무관) - 영상을 선택하면 지금 실행 중인
-카메라가 무엇이든(실카메라/Mock/기존 --playback) 멈추고 그 영상 기반 재생으로 바뀐다
+카메라가 무엇이든(실카메라/Mock) 멈추고 그 영상 기반 재생으로 바뀐다
 (InspectionViewModel.load_simulation_video 참고). 재생/일시정지는 작업자가 실제 장비를
 다루듯 직접 제어한다 - 일시정지해도 InspectionViewModel._on_frame은 계속 호출되므로
 (PlaybackCameraService가 마지막 프레임을 계속 재전송) 시험 절차 자체는 멈추지 않는다

@@ -37,6 +37,10 @@ class CheckResult:
     # 낮으므로(예: 실제로는 (0.1, 0.1)에서 시작), 판정은 항상 시작 지점 기준 상대값으로 해야
     # 한다 - docs/detection_notes.md 12차 참고.
     raw_measured_value: float | None = None
+    # 이 측정값을 산출한 실제 그리드 절대 좌표(x_moa, y_moa) - 종합 결과표에서 "35.5(0, 35.5)"
+    # 처럼 값과 함께 근거 지점을 같이 보여주기 위함(사용자 요청, 2026-09-16). raw_measured_value와
+    # 같은 좌표계(그리드 절대 원점 기준).
+    point_moa: tuple[float, float] | None = None
 
 
 @dataclass

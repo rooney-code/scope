@@ -95,6 +95,9 @@ class MainWindow(QMainWindow):
         test_layout = QVBoxLayout(test_tab)
         test_layout.addWidget(self.stage1_view)
         test_layout.addWidget(self.stage2_view)
+        # 영상 재생 컨트롤이 2단계 화면 바로 아래 붙어 답답해 보인다는 지적(2026-09-16)에
+        # 따라 약간 띄운다.
+        test_layout.addSpacing(20)
         test_layout.addWidget(video_separator)
         test_layout.addWidget(self.video_simulation_view)
         # 남는 세로 공간을 탭 맨 아래로만 모아 위쪽 내용(1/2단계, 종합 결과, 버튼들)이

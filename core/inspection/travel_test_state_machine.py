@@ -74,6 +74,11 @@ class TravelTestStateMachine:
         self._max_abs_cross_raw: float = 0.0
         self._last_primary_raw: float = 0.0
         self._last_cross_raw: float = 0.0
+        # 각 최댓값/최근값을 산출한 실제 (x_moa, y_moa) 그리드 절대 좌표 - 종합 결과표에서
+        # 측정값과 함께 근거 지점을 보여주기 위함(사용자 요청, 2026-09-16).
+        self._max_primary_reached_point: tuple[float, float] = (0.0, 0.0)
+        self._max_abs_cross_point: tuple[float, float] = (0.0, 0.0)
+        self._last_point: tuple[float, float] = (0.0, 0.0)
         # 이 방향 시험을 시작한 시점(첫 feed_position() 샘플)의 실측 좌표 - 시험 시작점이
         # 그리드 절대 원점(0,0)과 정확히 일치할 가능성은 낮으므로(사용자 확인 사항,
         # 2026-09-13), 이후 모든 primary/cross 값은 이 시작점을 기준(0,0)으로 재계산된
@@ -304,14 +309,17 @@ class TravelTestStateMachine:
         self._last_cross = cross
         self._last_primary_raw = primary_raw
         self._last_cross_raw = cross_raw
+        self._last_point = (sample.x_moa, sample.y_moa)
 
         if self.phase == Phase.OUTBOUND:
             if primary > self._max_primary_reached:
                 self._max_primary_reached = primary
                 self._max_primary_reached_raw = primary_raw
+                self._max_primary_reached_point = (sample.x_moa, sample.y_moa)
             if abs(cross) > self._max_abs_cross:
                 self._max_abs_cross = abs(cross)
                 self._max_abs_cross_raw = abs(cross_raw)
+                self._max_abs_cross_point = (sample.x_moa, sample.y_moa)
 
         # StabilityDetector는 (주축, 교차축)을 (x_moa, y_moa) 슬롯에 재사용해서 먹인다
         stability_sample = PositionSample(timestamp_s=sample.timestamp_s, x_moa=primary, y_moa=cross)
@@ -347,7 +355,17 @@ class TravelTestStateMachine:
         지점이 더 정확함, 2026-09-16)."""
         state = self._idle_stability.feed(sample)
         if state.is_stable and state.stable_position is not None:
-            self._idle_baseline = state.stable_position
+            sx, sy = state.stable_position
+            # "원점 부근"이라는 제약을 실제로 걸지 않고 있던 버그가 있었다(실측으로 확인,
+            # 2026-09-16) - 방향 시험이 목표 도달 전(예: 쉬프트 초과)에 조기 종료돼 레드닷이
+            # 원점이 아닌 곳(예: 35MOA 부근)에 멈춰 있으면, 그 위치가 그대로 대기 baseline으로
+            # 채택돼 (a) 안내 메시지가 "원점 정렬 완료"라고 잘못 알렸고 (b) 그 자리에서 조금만
+            # 더 움직여도(예: 손떨림) auto_direction_threshold_moa를 넘겨 엉뚱한 지점을
+            # 기준으로 새 방향 시험이 자동 시작돼버렸다("자동으로 시험절차 통과됨"). 원점
+            # 복귀 판정과 같은 기준(near_zero_band_moa) 이내에서 안정된 경우에만 baseline으로
+            # 채택한다.
+            if abs(sx) <= self.settings.near_zero_band_moa and abs(sy) <= self.settings.near_zero_band_moa:
+                self._idle_baseline = state.stable_position
 
         if self._idle_baseline is None:
             return
@@ -411,7 +429,13 @@ class TravelTestStateMachine:
     def mark_far_point_reached(self) -> None:
         """작업자가 목표(약 35MOA) 부근까지 이동을 완료했음을 알림 ('이동 완료' 버튼).
 
-        이동량/쉬프트/드리프트를 순서대로 평가하고, 모두 통과하면 복귀(RETURN) 단계로 전환한다.
+        이동량/쉬프트/드리프트는 이 시점에 이미 측정 가능한 데이터이므로 하나가 불합격이어도
+        나머지 둘까지 전부 계산해서 기록한다(사용자 요청, 2026-09-16 - "하나의 불량이
+        발생하면 나머지 항목은 기록하지 않는" 문제). 다만 백래쉬는 원점으로 실제 복귀해야만
+        잴 수 있는 값이라, 셋 중 하나라도 불합격이면 작업자에게 복귀를 추가로 요구하지 않고
+        (기록 가능한 것만 기록한다는 절충안, 사용자 확인) 백래쉬는 "측정 안 함"으로 남긴 채
+        바로 이 방향 시험을 종료한다. 셋 다 통과했을 때만 원래대로 복귀(RETURN) 단계로
+        전환해 백래쉬까지 마저 측정한다.
         """
         if self.phase != Phase.OUTBOUND:
             raise RuntimeError("이동 완료는 OUTBOUND 단계에서만 호출할 수 있습니다.")
@@ -427,11 +451,9 @@ class TravelTestStateMachine:
                 threshold_used=s.travel_target_moa,
                 status=Verdict.PASS if travel_ok else Verdict.FAIL,
                 raw_measured_value=self._max_primary_reached_raw,
+                point_moa=self._max_primary_reached_point,
             )
         )
-        if not travel_ok:
-            self._finalize_direction(checks, Verdict.FAIL)
-            return
 
         shift_ok = self._max_abs_cross <= s.shift_threshold_moa
         checks.append(
@@ -441,11 +463,9 @@ class TravelTestStateMachine:
                 threshold_used=s.shift_threshold_moa,
                 status=Verdict.PASS if shift_ok else Verdict.FAIL,
                 raw_measured_value=self._max_abs_cross_raw,
+                point_moa=self._max_abs_cross_point,
             )
         )
-        if not shift_ok:
-            self._finalize_direction(checks, Verdict.FAIL)
-            return
 
         # mark_far_point_reached()는 항상 목표 근처에서 안정된 직후(자동 감지) 또는 작업자가
         # 그 상태를 보면서 직접(수동) 호출하므로, 호출 시점의 _last_cross가 곧 "정착된" 값이다.
@@ -458,16 +478,17 @@ class TravelTestStateMachine:
                 threshold_used=s.drift_threshold_moa,
                 status=Verdict.PASS if drift_ok else Verdict.FAIL,
                 raw_measured_value=abs(self._last_cross_raw),
+                point_moa=self._last_point,
             )
         )
-        if not drift_ok:
-            self._finalize_direction(checks, Verdict.FAIL)
-            return
 
-        # 모두 통과 -> 복귀 단계로 전환 (백래쉬는 원점 복귀 시 평가)
-        self._pending_checks = checks
-        self._stability.reset()
-        self.phase = Phase.RETURN
+        if travel_ok and shift_ok and drift_ok:
+            # 모두 통과 -> 복귀 단계로 전환 (백래쉬는 원점 복귀 시 평가)
+            self._pending_checks = checks
+            self._stability.reset()
+            self.phase = Phase.RETURN
+        else:
+            self._finalize_direction(checks, Verdict.FAIL)
 
     def mark_returned_to_origin(self) -> None:
         """작업자가 원점(0)으로 복귀를 완료했음을 알림. 백래쉬를 평가하고 방향을 종료한다."""
@@ -485,6 +506,7 @@ class TravelTestStateMachine:
                 threshold_used=s.backlash_threshold_moa,
                 status=Verdict.PASS if backlash_ok else Verdict.FAIL,
                 raw_measured_value=abs(self._last_primary_raw),
+                point_moa=self._last_point,
             )
         )
         self._finalize_direction(checks, Verdict.PASS if backlash_ok else Verdict.FAIL)
@@ -512,6 +534,9 @@ class TravelTestStateMachine:
         self._max_abs_cross_raw = 0.0
         self._last_primary_raw = 0.0
         self._last_cross_raw = 0.0
+        self._max_primary_reached_point = (0.0, 0.0)
+        self._max_abs_cross_point = (0.0, 0.0)
+        self._last_point = (0.0, 0.0)
         self._baseline_captured = False
         self._baseline_x_moa = 0.0
         self._baseline_y_moa = 0.0

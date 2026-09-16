@@ -98,7 +98,8 @@ def main() -> None:
     print(f"방향={result.direction}, 판정={result.verdict}")
     for check in result.check_results:
         print(f"  {check.check_type.value}: {check.status.value} (측정값={check.measured_value})")
-    print(f"종합 결과 표 - 상 방향 이동량 칸: {window.stage2_view.results_table.item(0, 1).text()}")
+    # 결과표 0행은 "시작점"(사용자 요청, 2026-09-16으로 추가된 참고용 행)이라 1행이 이동량이다.
+    print(f"종합 결과 표 - 상 방향 이동량 칸: {window.stage2_view.results_table.item(1, 1).text()}")
     print("스모크 테스트 통과" if result.verdict.value == "합격" else "스모크 테스트 실패 (판정 불량)")
 
 

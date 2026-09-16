@@ -37,7 +37,15 @@ def _pass_direction(vm: InspectionViewModel, direction: TravelDirection) -> None
     vm.mark_returned_to_origin()
 
 
-def test_finalize_without_repository_just_locks_state_machine():
+def test_finalize_without_repository_just_locks_state_machine(tmp_path, monkeypatch):
+    # finalize_inspection()이 엑셀 파일(reports/results.xlsx)에도 저장하므로, 실제 공유
+    # 파일이 아니라 임시 경로로 격리한다 - 그 파일이 다른 프로세스(예: 사용자가 결과를 보려고
+    # 엑셀로 열어둠)에 잠겨 있으면 이 테스트가 무관한 이유로 실패할 수 있다(실측으로 확인,
+    # 2026-09-16).
+    import core.data.excel_report as excel_report
+
+    monkeypatch.setattr(excel_report, "DEFAULT_XLSX_PATH", tmp_path / "results.xlsx")
+
     vm = _make_vm(repository=None)
     vm.configure_directions([TravelDirection.UP])
     _pass_direction(vm, TravelDirection.UP)
@@ -50,7 +58,11 @@ def test_finalize_without_repository_just_locks_state_machine():
     assert not vm.is_ready_to_finalize
 
 
-def test_finalize_with_repository_saves_full_session():
+def test_finalize_with_repository_saves_full_session(tmp_path, monkeypatch):
+    import core.data.excel_report as excel_report
+
+    monkeypatch.setattr(excel_report, "DEFAULT_XLSX_PATH", tmp_path / "results.xlsx")
+
     conn = FakeMssqlConnection()
     repo = InspectionRepository(conn)
     vm = _make_vm(repository=repo)
@@ -210,12 +222,14 @@ def test_feed_position_still_runs_for_manually_started_direction_without_session
     assert vm.state_machine.max_primary_reached_moa > 0  # feed_position이 실제로 동작함
 
 
-def test_finalize_inspection_writes_txt_report(tmp_path, monkeypatch):
-    """DB는 나중에(기능 검증 후) 별도로 다시 붙이기로 하고, 지금은 배포 대상 PC에 DB 설치
-    없이도 결과를 남길 수 있게 텍스트로 저장한다(사용자 요청, 2026-09-16)."""
-    import core.data.text_report as text_report
+def test_finalize_inspection_appends_to_excel_report(tmp_path, monkeypatch):
+    """DB는 나중에(기능 검증 후) 별도로 다시 붙이기로 하고, 그때까지는 배포 대상 PC에 DB
+    설치 없이도 여러 세션을 한 파일에서 비교해볼 수 있게 엑셀 한 파일에 계속 누적 저장한다
+    (사용자 요청, 2026-09-16 - 세션마다 흩어지는 텍스트 파일에서 엑셀 누적으로 변경)."""
+    import core.data.excel_report as excel_report
 
-    monkeypatch.setattr(text_report, "_DEFAULT_REPORTS_DIR", tmp_path)
+    xlsx_path = tmp_path / "results.xlsx"
+    monkeypatch.setattr(excel_report, "DEFAULT_XLSX_PATH", xlsx_path)
 
     vm = _make_vm(repository=None)
     vm.configure_directions([TravelDirection.UP])
@@ -223,11 +237,50 @@ def test_finalize_inspection_writes_txt_report(tmp_path, monkeypatch):
 
     vm.finalize_inspection()
 
-    files = list(tmp_path.glob("*.txt"))
-    assert len(files) == 1
-    assert vm.scope_id in files[0].name
-    content = files[0].read_text(encoding="utf-8")
-    assert "합격" in content or "불량" in content
+    assert xlsx_path.exists()
+    from openpyxl import load_workbook
+
+    ws = load_workbook(xlsx_path).active
+    rows = list(ws.iter_rows(values_only=True))
+    assert rows[0][:3] == ("날짜/시간", "부품 ID", "항목")  # 헤더
+    assert any(row[1] == vm.scope_id for row in rows[1:])  # 이 세션의 부품 ID로 된 행이 있음
+    assert any(row[8] in ("합격", "불량") for row in rows[1:])  # 종합 결과 열이 채워져 있음
+
+
+def test_finalize_inspection_permission_error_can_be_retried(tmp_path, monkeypatch):
+    """엑셀 파일이 다른 프로그램(엑셀 등)에서 열려 있어 저장이 실패(PermissionError)해도
+    프로그램이 죽거나 결과가 조용히 유실되지 않고, ExcelSaveFailedError로 바뀌어 UI가 안내할
+    수 있어야 한다. 상태기계는 이미 finalize()되어 되돌릴 수 없으므로, retry_excel_save()는
+    finalize_inspection()을 다시 부르지 않고 저장만 재시도해야 한다(사용자 요청, 2026-09-16)."""
+    import app.viewmodels.inspection_viewmodel as vm_module
+
+    calls = {"n": 0}
+    real_append = vm_module.append_session_xlsx
+    xlsx_path = tmp_path / "results.xlsx"
+
+    def flaky_append(session, path=None):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise PermissionError("다른 프로그램이 파일을 사용 중입니다.")
+        return real_append(session, path=xlsx_path)
+
+    monkeypatch.setattr(vm_module, "append_session_xlsx", flaky_append)
+
+    vm = _make_vm(repository=None)
+    vm.configure_directions([TravelDirection.UP])
+    _pass_direction(vm, TravelDirection.UP)
+
+    with pytest.raises(vm_module.ExcelSaveFailedError):
+        vm.finalize_inspection()
+
+    assert vm.state_machine.finalized  # 이미 확정됨(재시험 불가) - 재시도는 저장만 다시 함
+    assert calls["n"] == 1
+
+    overall = vm.retry_excel_save()
+
+    assert overall == Verdict.PASS.value
+    assert calls["n"] == 2
+    assert xlsx_path.exists()
 
 
 def _make_test_video(path: Path, n_frames: int = 10, fps: float = 20.0) -> None:

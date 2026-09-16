@@ -16,13 +16,20 @@ from core.camera.camera_service import ICameraService
 from core.camera.frame_bus import FrameBus
 from core.camera.playback_camera_service import PlaybackCameraService
 from core.config.settings import Settings
-from core.data.text_report import write_session_txt
+from core.data.excel_report import append_session_xlsx
 from core.inspection.models import InspectionSession, Stage2LiveState, TravelDirection, Verdict
 from core.inspection.travel_test_state_machine import Phase, TravelTestStateMachine
 from core.tracking.position_sample import PositionSample
 from core.tracking.stability_detector import StabilityDetector
 from core.vision.blob_tracker import BlobTracker
 from core.vision.red_dot_detector import DetectionResult, RedDotDetector
+
+
+class ExcelSaveFailedError(RuntimeError):
+    """엑셀 결과 파일 저장 실패 - 대부분 그 파일이 다른 프로그램(엑셀 등)에서 열려 있어
+    잠긴 경우다. 일반 예외와 구분해서 UI가 "파일을 닫고 다시 시도" 안내를 보여줄 수 있게
+    한다(사용자 요청, 2026-09-16 - 저장 실패로 프로그램이 죽거나 결과가 조용히 유실되는
+    대신, 사용자에게 알리고 재시도할 수 있어야 한다)."""
 
 # 시험 방향(TravelDirection) -> 화면 픽셀 방향 힌트(부호만 의미 있음). "위(up)가 +Y"라는
 # 도메인 규약(PixelAngleCalibration.to_moa 참고: 화면 y는 아래로 증가하지만 위가 +Y이므로
@@ -84,6 +91,10 @@ class InspectionViewModel(QObject):
         # "시험 시작" 버튼을 눌러야 대기 baseline 추적(자동 방향 인식)이 시작된다 - 계산 준비
         # 전(부품 ID 미입력 등)에 미리 추적이 시작되지 않게 하기 위함(사용자 요청, 2026-09-16).
         self._session_active: bool = False
+        # 엑셀 저장이 실패(주로 파일이 다른 프로그램에서 열려 잠김)했을 때, 상태기계를 다시
+        # finalize()하지 않고 저장만 재시도할 수 있도록 마지막으로 확정된 세션을 보관해둔다
+        # (retry_excel_save 참고, 사용자 요청 2026-09-16).
+        self._pending_excel_session: InspectionSession | None = None
         # 프레임당 처리(검출+상태기계) 시간의 지수이동평균(초) - 실장비 없이 녹화 영상으로
         # 절차를 검증할 때, 처리 속도가 영상의 실제 fps를 못 따라가면 얼마나 못 따라가는지
         # 화면에 보여주기 위함(사용자 요청, 2026-09-15). 개발 PC에서는 평균 3ms 정도지만
@@ -218,23 +229,57 @@ class InspectionViewModel(QObject):
         return self.state_machine.is_ready_to_finalize
 
     def finalize_inspection(self) -> str:
-        """'시험 종료' 버튼 - 결과를 확정하고(이후 재시험 불가) 텍스트 파일로 저장한다.
+        """'시험 종료' 버튼 - 결과를 확정하고(이후 재시험 불가) 엑셀 파일에 누적 저장한다.
         repository가 있으면 DB에도 저장한다. DB는 나중에(기능 검증 후) 별도로 다시 붙이기로
-        하고, 지금은 배포 대상 PC에 DB 설치 없이도 결과를 남길 수 있게 텍스트 저장을
-        기본으로 한다(사용자 요청, 2026-09-16). 반환값: 최종 전체 판정 문자열."""
+        하고, 지금은 배포 대상 PC에 DB 설치 없이도 여러 세션을 한 파일에서 비교해볼 수 있게
+        엑셀 누적 저장을 기본으로 한다(사용자 요청, 2026-09-16 - 세션마다 흩어지는 텍스트
+        파일 대신 엑셀 한 파일에 계속 쌓이도록 변경).
+
+        엑셀 파일이 다른 프로그램(엑셀 등)에서 열려 있어 저장에 실패하면 ExcelSaveFailedError를
+        던진다 - 상태기계는 이미 finalize()되어 되돌릴 수 없으므로(재시험 불가), 호출부(UI)는
+        이 세션을 다시 만들 필요 없이 retry_excel_save()로 저장만 다시 시도하면 된다(사용자
+        요청, 2026-09-16 - 저장 실패로 프로그램이 죽거나 결과가 조용히 유실되면 안 됨).
+        반환값: 최종 전체 판정 문자열."""
         self.state_machine.finalize()
         session = InspectionSession(
             scope_id=self.scope_id or "",
             direction_results=self.state_machine.direction_results,
             overall_verdict=self.state_machine.overall_verdict,
         )
-        write_session_txt(session)
+        self._pending_excel_session = session
+        self._save_session_to_excel(session)
         if self.repository is not None and self.scope_id:
             session_id = self.repository.create_session(self.scope_id, operator="")
             self.repository.save_full_session(session, session_id)
         overall_verdict = self.state_machine.overall_verdict.value
         self.inspection_finalized.emit(overall_verdict)
         return overall_verdict
+
+    def retry_excel_save(self) -> str:
+        """엑셀 저장 실패(ExcelSaveFailedError) 후 사용자가 파일을 닫고 "다시 시도"를 눌렀을
+        때 호출 - finalize_inspection()을 다시 부르지 않는다(상태기계가 이미 finalized라
+        다시 부르면 예외가 남). 저장만 재시도하고, 성공하면 DB 저장/완료 시그널까지 마저
+        진행한다. 반환값: 최종 전체 판정 문자열."""
+        session = self._pending_excel_session
+        if session is None:
+            raise RuntimeError("재시도할 저장이 없습니다 - finalize_inspection()을 먼저 호출하세요.")
+        self._save_session_to_excel(session)
+        if self.repository is not None and self.scope_id:
+            session_id = self.repository.create_session(self.scope_id, operator="")
+            self.repository.save_full_session(session, session_id)
+        overall_verdict = session.overall_verdict.value
+        self.inspection_finalized.emit(overall_verdict)
+        return overall_verdict
+
+    def _save_session_to_excel(self, session: InspectionSession) -> None:
+        try:
+            append_session_xlsx(session)
+        except PermissionError as exc:
+            raise ExcelSaveFailedError(
+                "결과 파일(엑셀)이 다른 프로그램(예: Excel)에서 열려 있어 저장할 수 없습니다.\n"
+                "파일을 닫고 다시 시도해주세요."
+            ) from exc
+        self._pending_excel_session = None
 
     def _after_state_change(self) -> None:
         # direction_completed를 phase_changed보다 먼저 내보낸다 - Stage2TravelTestView는 두

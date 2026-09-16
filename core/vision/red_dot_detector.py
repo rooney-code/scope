@@ -157,6 +157,21 @@ class RedDotDetector:
                 if center is None:
                     center = (moments["m10"] / moments["m00"], moments["m01"] / moments["m00"])
 
+            # 실측 이미지에서 "검출된 중심이 실제 가장 밝은 부분보다 오른쪽 아래로 쏠려
+            # 보인다"는 지적(2026-09-16) - 과포화(peak_v=255)된 픽셀은 power를 아무리
+            # 올려도 가중치가 항상 1.0이라(1.0**power == 1.0) 서로 구분이 안 되고, 결국
+            # 어두운 halo까지 끌어들인 전체 영역의 무게중심에 가까워지는 게 아닌가 하는
+            # 가설을 세웠다. 실제로 적용하기 전에 대안(power를 더 올리기 / 마스크 자체를
+            # 밝은 픽셀로 좁히기)이 중심을 어디로 옮기는지 로그로만 먼저 추정해본다 - center
+            # 자체는 그대로 두고 비교용 출력만 남긴다(사용자 요청, 2026-09-16).
+            if s.debug_logging and core_circle is None:
+                current_display = (center[0] + offset_x, center[1] + offset_y)
+                estimates = self._debug_centroid_estimates(contour, mask, value_channel, (offset_x, offset_y))
+                print(
+                    f"[detect] 중심 추정 비교(현재 power={s.centroid_intensity_power:.1f}: "
+                    f"{current_display[0]:.1f},{current_display[1]:.1f}): {estimates}"
+                )
+
             # roi_px로 잘라낸 영역 안에서 계산했으므로, 반환 직전에 원본 프레임 좌표계로
             # 되돌린다 - 호출부(BlobTracker/캘리브레이션 등)는 항상 원본 좌표만 다루면 된다.
             if offset_x or offset_y:
@@ -192,6 +207,55 @@ class RedDotDetector:
 
         results.sort(key=lambda r: r.area_px2, reverse=True)
         return results
+
+    @staticmethod
+    def _debug_centroid_estimates(
+        contour: np.ndarray,
+        mask: np.ndarray,
+        value_channel: np.ndarray,
+        offset_px: tuple[float, float],
+    ) -> str:
+        """실제 검출에는 전혀 관여하지 않는 순수 진단용 - 검출된 중심이 실제 가장 밝은
+        부분(육안)보다 어두운 halo 쪽으로 쏠려 보인다는 지적(2026-09-16)에 따라, 코드를
+        실제로 바꾸기 전에 두 가지 대안이 중심을 어디로 옮기는지 로그로 먼저 추정한다:
+        (1) 밝기 가중치(power)를 지금보다 훨씬 세게(6.0/10.0) 주면 어떻게 되는지 - 단,
+        과포화(V=255) 픽셀은 1.0**power == 1.0이라 power를 아무리 올려도 서로 구분되지
+        않고 동일하게 최대 가중치를 유지하므로, "이미 과포화된 넓은 영역" 자체의 무게중심
+        에서 크게 못 벗어날 수 있다. (2) 마스크 자체를 V>=250인 픽셀만으로 좁혀서(halo를
+        아예 제외) 그 좁은 핵심 영역만의 무게중심을 구하면 어떻게 되는지 - 이쪽이 halo의
+        영향을 원천 차단하므로 이론상 더 효과적일 가능성이 높다."""
+        x, y, w, h = cv2.boundingRect(contour)
+        if w <= 0 or h <= 0:
+            return "n/a"
+
+        local_mask = np.zeros((h, w), dtype=np.uint8)
+        cv2.drawContours(local_mask, [contour], -1, 255, thickness=cv2.FILLED, offset=(-x, -y))
+        local_mask = cv2.bitwise_and(local_mask, mask[y : y + h, x : x + w])
+        value_crop = value_channel[y : y + h, x : x + w].astype(np.float64)
+        ox, oy = offset_px
+
+        def _weighted_center(mask_arr: np.ndarray, power: float) -> str:
+            weights = (mask_arr > 0).astype(np.float64)
+            if power > 0:
+                weights *= np.power(value_crop / 255.0, power)
+            total = weights.sum()
+            if total <= 0:
+                return "n/a"
+            ys, xs = np.mgrid[0:h, 0:w]
+            cx = float((xs * weights).sum() / total) + x + ox
+            cy = float((ys * weights).sum() / total) + y + oy
+            return f"({cx:.1f},{cy:.1f})"
+
+        # 옵션2: halo(어둡고 넓게 퍼진 부분)를 아예 마스크에서 빼고 거의 포화된 핵심
+        # 픽셀(V>=250)만 남긴다 - 이 부분마저 비어있으면(과포화 영역이 거의 없으면)
+        # "n/a"로 표시된다.
+        strict_mask = np.where(value_crop >= 250, local_mask, 0).astype(np.uint8)
+
+        return (
+            f"power=6.0:{_weighted_center(local_mask, 6.0)} "
+            f"power=10.0:{_weighted_center(local_mask, 10.0)} "
+            f"strict_v>=250(power=2.0):{_weighted_center(strict_mask, 2.0)}"
+        )
 
     @staticmethod
     def _intensity_weighted_centroid(

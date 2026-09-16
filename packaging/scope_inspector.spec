@@ -34,8 +34,9 @@ hiddenimports = [
 ]
 
 # ids_peak / ids_peak_ipl은 IDS Software Suite가 설치된 PC에만 존재하는 선택적 패키지.
-# 빌드 PC에 설치되어 있으면 자동으로 포함되고, 없으면 무시된다(런타임에 --mock/--playback으로도
-# 동작 가능하므로 빌드 실패 조건으로 취급하지 않음).
+# 빌드 PC에 설치되어 있으면 자동으로 포함되고, 없으면 무시된다(런타임에 --mock으로도 동작
+# 가능하고, 실카메라 연결에 실패해도 자동으로 가상 카메라로 전환되므로 빌드 실패 조건으로
+# 취급하지 않음).
 try:
     import ids_peak  # noqa: F401
 
