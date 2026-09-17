@@ -1,18 +1,23 @@
-"""시험 결과를 엑셀(.xlsx) 파일 하나에 계속 누적 저장한다.
+"""시험 결과를 엑셀(.xlsx) 파일에 누적 저장한다.
 
 DB는 나중에(기능 검증 후) 별도로 다시 붙이기로 하고, 그때까지는 배포 대상 PC에 DB 설치
 없이도 결과를 남길 수 있게 하기 위한 조치(사용자 요청, 2026-09-16). 처음엔 세션마다 별도
 텍스트 파일(write_session_txt)로 저장했었는데, 여러 세션을 한 눈에 비교/정렬하려면 파일이
-따로따로 흩어져 있는 것보다 엑셀 한 파일에 계속 쌓이는 편이 훨씬 낫다는 요청에 따라 이걸로
-대체한다.
+따로따로 흩어져 있는 것보다 엑셀 파일에 계속 쌓이는 편이 훨씬 낫다는 요청에 따라 이걸로
+대체했다.
+
+파일을 하나로 무한정 계속 누적하면 나중에 너무 커진다는 지적(2026-09-17)에 따라, 검사장비
+ID(설정 화면의 ReportSettings.equipment_id)와 연월로 파일을 나눈다 - 예: "202609_TI001.xlsx".
+장비 ID는 "검사 설정" 탭에서 언제든 바꿀 수 있고 settings.json에 저장된다.
 
 세션(부품 ID 하나)당 6행(시작점 + 이동량/데드클릭/드리프트/쉬프트/백래쉬) x (날짜/부품ID
-공통 + 상/하/좌/우 + 결과 + 종합 결과) 블록을 기존 파일 맨 아래에 이어붙인다. 파일이 없으면
-헤더와 함께 새로 만든다. `InspectionRepository`(core/data/repository.py)는 그대로 남겨둬서
-나중에 DB를 다시 붙일 때 같은 InspectionSession을 그대로 쓸 수 있다.
+공통 + 상/하/좌/우 + 결과 + 종합 결과) 블록을 파일 맨 아래에 이어붙인다. 파일이 없으면 헤더와
+함께 새로 만든다. `InspectionRepository`(core/data/repository.py)는 그대로 남겨둬서 나중에
+DB를 다시 붙일 때 같은 InspectionSession을 그대로 쓸 수 있다.
 """
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -20,6 +25,7 @@ from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Alignment, Font
 from openpyxl.utils import get_column_letter
 
+from core.app_paths import get_app_base_dir
 from core.inspection.models import CheckType, DirectionTestResult, InspectionSession, TravelDirection, Verdict
 
 _DIRECTION_ORDER = (TravelDirection.UP, TravelDirection.DOWN, TravelDirection.LEFT, TravelDirection.RIGHT)
@@ -44,13 +50,27 @@ _ROW_ORDER = (
 )
 _HEADER = ["날짜/시간", "부품 ID", "항목", "상", "하", "좌", "우", "결과", "종합 결과"]
 _MERGED_COLUMNS = (1, 2, 9)  # 날짜/부품 ID/종합 결과 - 세션당 한 번만 보이면 되는 열
+# 파일명에 쓸 수 없는 문자(윈도우 기준) + 공백 - 장비 ID를 그대로 파일명에 넣으므로 방어적으로
+# 걸러낸다("영문+숫자" 권장이지만 강제하지는 않음).
+_UNSAFE_FILENAME_CHARS = re.compile(r'[\\/:*?"<>|\s]')
+_FALLBACK_EQUIPMENT_ID = "UNKNOWN"
 
-DEFAULT_XLSX_PATH = Path(__file__).resolve().parents[2] / "reports" / "results.xlsx"
+
+def resolve_xlsx_path(equipment_id: str, when: datetime | None = None) -> Path:
+    """검사장비 ID + 연월로 결과 파일 경로를 결정한다 - 파일 하나가 무한정 커지는 것을 막기
+    위해 장비별/월별로 나눈다(예: "202609_TI001.xlsx", 사용자 요청 2026-09-17). 장비 ID가
+    비어 있거나(설정 안 함) 파일명에 못 쓰는 문자만 있으면 "UNKNOWN"으로 대체한다 - 정상
+    운용에서는 settings.json의 ReportSettings.equipment_id 기본값("TI_default")이 있어
+    실제로 빈 채로 저장되는 일은 거의 없다."""
+    when = when or datetime.now()
+    safe_id = _UNSAFE_FILENAME_CHARS.sub("", equipment_id).strip() or _FALLBACK_EQUIPMENT_ID
+    return get_app_base_dir() / "reports" / f"{when:%Y%m}_{safe_id}.xlsx"
 
 
-def append_session_xlsx(session: InspectionSession, path: Path | None = None) -> Path:
-    """세션 결과를 엑셀 파일 맨 아래에 새 블록으로 추가하고, 저장된 파일 경로를 반환한다."""
-    target = Path(path) if path is not None else DEFAULT_XLSX_PATH
+def append_session_xlsx(session: InspectionSession, path: Path) -> Path:
+    """세션 결과를 엑셀 파일 맨 아래에 새 블록으로 추가하고, 저장된 파일 경로를 반환한다.
+    path는 보통 resolve_xlsx_path(equipment_id)로 미리 계산해서 넘긴다."""
+    target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
 
     if target.exists():

@@ -38,13 +38,14 @@ def _pass_direction(vm: InspectionViewModel, direction: TravelDirection) -> None
 
 
 def test_finalize_without_repository_just_locks_state_machine(tmp_path, monkeypatch):
-    # finalize_inspection()이 엑셀 파일(reports/results.xlsx)에도 저장하므로, 실제 공유
-    # 파일이 아니라 임시 경로로 격리한다 - 그 파일이 다른 프로세스(예: 사용자가 결과를 보려고
-    # 엑셀로 열어둠)에 잠겨 있으면 이 테스트가 무관한 이유로 실패할 수 있다(실측으로 확인,
-    # 2026-09-16).
+    # finalize_inspection()이 엑셀 파일(reports/<연월>_<장비ID>.xlsx)에도 저장하므로, 실제
+    # 공유 파일이 아니라 임시 경로로 격리한다 - 그 파일이 다른 프로세스(예: 사용자가 결과를
+    # 보려고 엑셀로 열어둠)에 잠겨 있으면 이 테스트가 무관한 이유로 실패할 수 있다(실측으로
+    # 확인, 2026-09-16). resolve_xlsx_path()가 내부적으로 get_app_base_dir()을 쓰므로 그걸
+    # 임시 경로로 바꿔치기한다.
     import core.data.excel_report as excel_report
 
-    monkeypatch.setattr(excel_report, "DEFAULT_XLSX_PATH", tmp_path / "results.xlsx")
+    monkeypatch.setattr(excel_report, "get_app_base_dir", lambda: tmp_path)
 
     vm = _make_vm(repository=None)
     vm.configure_directions([TravelDirection.UP])
@@ -61,7 +62,7 @@ def test_finalize_without_repository_just_locks_state_machine(tmp_path, monkeypa
 def test_finalize_with_repository_saves_full_session(tmp_path, monkeypatch):
     import core.data.excel_report as excel_report
 
-    monkeypatch.setattr(excel_report, "DEFAULT_XLSX_PATH", tmp_path / "results.xlsx")
+    monkeypatch.setattr(excel_report, "get_app_base_dir", lambda: tmp_path)
 
     conn = FakeMssqlConnection()
     repo = InspectionRepository(conn)
@@ -224,19 +225,22 @@ def test_feed_position_still_runs_for_manually_started_direction_without_session
 
 def test_finalize_inspection_appends_to_excel_report(tmp_path, monkeypatch):
     """DB는 나중에(기능 검증 후) 별도로 다시 붙이기로 하고, 그때까지는 배포 대상 PC에 DB
-    설치 없이도 여러 세션을 한 파일에서 비교해볼 수 있게 엑셀 한 파일에 계속 누적 저장한다
-    (사용자 요청, 2026-09-16 - 세션마다 흩어지는 텍스트 파일에서 엑셀 누적으로 변경)."""
+    설치 없이도 여러 세션을 한 파일에서 비교해볼 수 있게 엑셀 파일에 계속 누적 저장한다
+    (사용자 요청, 2026-09-16 - 세션마다 흩어지는 텍스트 파일에서 엑셀 누적으로 변경). 파일이
+    하나로 무한정 커지는 걸 막기 위해 "검사장비 ID + 연월"로 나눈다(사용자 요청, 2026-09-17)."""
     import core.data.excel_report as excel_report
 
-    xlsx_path = tmp_path / "results.xlsx"
-    monkeypatch.setattr(excel_report, "DEFAULT_XLSX_PATH", xlsx_path)
+    monkeypatch.setattr(excel_report, "get_app_base_dir", lambda: tmp_path)
 
     vm = _make_vm(repository=None)
+    vm.settings.report.equipment_id = "TI001"
     vm.configure_directions([TravelDirection.UP])
     _pass_direction(vm, TravelDirection.UP)
 
     vm.finalize_inspection()
 
+    xlsx_path = excel_report.resolve_xlsx_path("TI001")
+    assert xlsx_path.name.endswith("_TI001.xlsx")
     assert xlsx_path.exists()
     from openpyxl import load_workbook
 
@@ -247,22 +251,38 @@ def test_finalize_inspection_appends_to_excel_report(tmp_path, monkeypatch):
     assert any(row[8] in ("합격", "불량") for row in rows[1:])  # 종합 결과 열이 채워져 있음
 
 
+def test_resolve_xlsx_path_falls_back_when_equipment_id_blank():
+    """검사장비 ID가 비어 있으면(설정을 지웠거나 파일명에 못 쓰는 문자만 있으면) 파일명이
+    깨지지 않도록 "UNKNOWN"으로 대체한다(사용자 요청, 2026-09-17) - 정상 운용에서는
+    settings.json 기본값("TI_default")이 있어 실제로 이 경로를 타는 일은 드물다."""
+    from datetime import datetime
+
+    from core.data.excel_report import resolve_xlsx_path
+
+    when = datetime(2026, 9, 17)
+    assert resolve_xlsx_path("", when=when).name == "202609_UNKNOWN.xlsx"
+    assert resolve_xlsx_path("   ", when=when).name == "202609_UNKNOWN.xlsx"
+    assert resolve_xlsx_path("TI 001", when=when).name == "202609_TI001.xlsx"  # 공백 제거
+
+
 def test_finalize_inspection_permission_error_can_be_retried(tmp_path, monkeypatch):
     """엑셀 파일이 다른 프로그램(엑셀 등)에서 열려 있어 저장이 실패(PermissionError)해도
     프로그램이 죽거나 결과가 조용히 유실되지 않고, ExcelSaveFailedError로 바뀌어 UI가 안내할
     수 있어야 한다. 상태기계는 이미 finalize()되어 되돌릴 수 없으므로, retry_excel_save()는
     finalize_inspection()을 다시 부르지 않고 저장만 재시도해야 한다(사용자 요청, 2026-09-16)."""
     import app.viewmodels.inspection_viewmodel as vm_module
+    import core.data.excel_report as excel_report
+
+    monkeypatch.setattr(excel_report, "get_app_base_dir", lambda: tmp_path)
 
     calls = {"n": 0}
     real_append = vm_module.append_session_xlsx
-    xlsx_path = tmp_path / "results.xlsx"
 
-    def flaky_append(session, path=None):
+    def flaky_append(session, path):
         calls["n"] += 1
         if calls["n"] == 1:
             raise PermissionError("다른 프로그램이 파일을 사용 중입니다.")
-        return real_append(session, path=xlsx_path)
+        return real_append(session, path)
 
     monkeypatch.setattr(vm_module, "append_session_xlsx", flaky_append)
 
@@ -280,7 +300,7 @@ def test_finalize_inspection_permission_error_can_be_retried(tmp_path, monkeypat
 
     assert overall == Verdict.PASS.value
     assert calls["n"] == 2
-    assert xlsx_path.exists()
+    assert vm_module.resolve_xlsx_path(vm.settings.report.equipment_id).exists()
 
 
 def _make_test_video(path: Path, n_frames: int = 10, fps: float = 20.0) -> None:

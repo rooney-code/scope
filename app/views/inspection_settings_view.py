@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QFormLayout,
     QLabel,
+    QLineEdit,
     QMessageBox,
     QPushButton,
     QSpinBox,
@@ -27,7 +28,14 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from core.config.settings import DEFAULT_SETTINGS_PATH, DetectionSettings, Settings, Stage2Settings, StabilitySettings
+from core.config.settings import (
+    DEFAULT_SETTINGS_PATH,
+    DetectionSettings,
+    ReportSettings,
+    Settings,
+    Stage2Settings,
+    StabilitySettings,
+)
 
 _STAGE2_LABELS = {
     "travel_target_moa": "목표 이동량 [MOA]",
@@ -42,6 +50,9 @@ _STABILITY_LABELS = {
     "window_size_samples": "정지 판정 샘플 수",
     "variance_threshold_moa2": "정지 판정 분산 임계값 [MOA²]",
     "min_stable_duration_s": "정지 판정 대기시간 [초]",
+}
+_REPORT_LABELS = {
+    "equipment_id": "검사장비 ID (영문+숫자 권장, 결과 파일명 202609_ID.xlsx에 사용)",
 }
 _STOP_ON_FAILURE_OPTIONS = ["entire_inspection", "direction_only"]
 # 필드별로 소수점 자리수를 다르게 준다 - 기본(2자리)로는 분산 임계값(0.01)처럼 작은 값이나
@@ -69,6 +80,8 @@ class InspectionSettingsView(QWidget):
         layout.addLayout(self._build_form(self.settings.stage2, _STAGE2_LABELS))
         layout.addWidget(_section_label("정지 판정 (원점 정렬 대기/목표 도달/원점 복귀 공통)"))
         layout.addLayout(self._build_form(self.settings.stability, _STABILITY_LABELS))
+        layout.addWidget(_section_label("리포트 (결과 엑셀 파일)"))
+        layout.addLayout(self._build_form(self.settings.report, _REPORT_LABELS))
 
         # DetectionSettings는 hsv 튜플 등 이 화면이 다루지 않는 필드가 많아 _build_form()으로
         # 통째로 돌리지 않고, 필요한 필드 하나만 수동으로 추가한다(사용자 요청, 2026-09-16 -
@@ -104,6 +117,12 @@ class InspectionSettingsView(QWidget):
             combo.addItems(_STOP_ON_FAILURE_OPTIONS)
             combo.setCurrentText(str(value))
             return combo
+        if isinstance(value, str):
+            # equipment_id 같은 순수 텍스트 필드 - 엑셀 결과 파일명에 그대로 쓰이므로
+            # 사용자에게 숫자 스핀박스가 아니라 자유 텍스트 입력을 준다(사용자 요청,
+            # 2026-09-17).
+            line = QLineEdit(value)
+            return line
         if isinstance(value, int):  # bool은 이 화면의 대상 필드에 없음
             spin = QSpinBox()
             spin.setRange(0, 1_000_000)
@@ -125,6 +144,10 @@ class InspectionSettingsView(QWidget):
             widget.valueChanged.connect(lambda value, n=name: setattr(dataclass_obj, n, value))
         elif isinstance(widget, QDoubleSpinBox):
             widget.valueChanged.connect(lambda value, n=name: setattr(dataclass_obj, n, value))
+        elif isinstance(widget, QLineEdit):
+            # 텍스트는 매 글자마다 반영하면 산만하므로 포커스를 벗어날 때(Enter 포함)만
+            # 반영한다(CameraSettingsView의 QLineEdit 처리와 동일한 패턴).
+            widget.editingFinished.connect(lambda n=name, w=widget: setattr(dataclass_obj, n, w.text()))
 
     def _on_save(self) -> None:
         self.settings.save(DEFAULT_SETTINGS_PATH)
@@ -141,6 +164,11 @@ class InspectionSettingsView(QWidget):
             default_value = getattr(stability_defaults, f.name)
             setattr(self.settings.stability, f.name, default_value)
             self._set_widget_value(self._widgets[f.name], default_value)
+        report_defaults = ReportSettings()
+        for f in fields(ReportSettings):
+            default_value = getattr(report_defaults, f.name)
+            setattr(self.settings.report, f.name, default_value)
+            self._set_widget_value(self._widgets[f.name], default_value)
         default_skip = DetectionSettings().adaptive_frame_skip_max
         self.settings.detection.adaptive_frame_skip_max = default_skip
         self._set_widget_value(self._widgets["adaptive_frame_skip_max"], default_skip)
@@ -153,5 +181,7 @@ class InspectionSettingsView(QWidget):
                 widget.setCurrentText(str(value))
             elif isinstance(widget, (QSpinBox, QDoubleSpinBox)):
                 widget.setValue(value)
+            elif isinstance(widget, QLineEdit):
+                widget.setText(str(value))
         finally:
             widget.blockSignals(False)

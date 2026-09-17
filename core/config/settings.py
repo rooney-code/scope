@@ -10,6 +10,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
+from core.app_paths import get_app_base_dir
+
 
 @dataclass
 class CameraSettings:
@@ -201,6 +203,16 @@ class DirectionQueueSettings:
 
 
 @dataclass
+class ReportSettings:
+    # 결과 엑셀 파일명을 결정하는 검사 장비 ID(영문+숫자 권장, 예: "TI001") - 결과 파일을
+    # "YYYYMM_장비ID.xlsx"(예: "202609_TI001.xlsx")로 장비별/월별로 나눠서 하나의 파일이
+    # 무한정 커지는 것을 막는다(사용자 요청, 2026-09-17). settings.json에 저장/관리되며
+    # "검사 설정" 탭에서 배포 후에도 바꿀 수 있다 - 배포 기본값은 "TI_default"로 두고,
+    # 현장에서 실제 장비 ID로 바꿔 쓰는 것을 전제로 한다.
+    equipment_id: str = "TI_default"
+
+
+@dataclass
 class Settings:
     camera: CameraSettings = field(default_factory=CameraSettings)
     database: DatabaseSettings = field(default_factory=DatabaseSettings)
@@ -209,6 +221,7 @@ class Settings:
     stage2: Stage2Settings = field(default_factory=Stage2Settings)
     stability: StabilitySettings = field(default_factory=StabilitySettings)
     direction_queue: DirectionQueueSettings = field(default_factory=DirectionQueueSettings)
+    report: ReportSettings = field(default_factory=ReportSettings)
 
     @staticmethod
     def load(path: str | Path) -> "Settings":
@@ -224,6 +237,7 @@ class Settings:
             stage2=Stage2Settings(**data.get("stage2", {})),
             stability=StabilitySettings(**data.get("stability", {})),
             direction_queue=DirectionQueueSettings(**data.get("direction_queue", {})),
+            report=ReportSettings(**data.get("report", {})),
         )
 
     def save(self, path: str | Path) -> None:
@@ -240,7 +254,7 @@ def _tuplify_hsv(detection_dict: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-DEFAULT_SETTINGS_PATH = Path(__file__).resolve().parents[2] / "settings.json"
+DEFAULT_SETTINGS_PATH = get_app_base_dir() / "settings.json"
 
 
 def load_default_settings() -> Settings:

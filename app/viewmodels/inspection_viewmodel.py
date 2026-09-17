@@ -16,7 +16,7 @@ from core.camera.camera_service import ICameraService
 from core.camera.frame_bus import FrameBus
 from core.camera.playback_camera_service import PlaybackCameraService
 from core.config.settings import Settings
-from core.data.excel_report import append_session_xlsx
+from core.data.excel_report import append_session_xlsx, resolve_xlsx_path
 from core.inspection.models import InspectionSession, Stage2LiveState, TravelDirection, Verdict
 from core.inspection.travel_test_state_machine import Phase, TravelTestStateMachine
 from core.tracking.position_sample import PositionSample
@@ -272,8 +272,9 @@ class InspectionViewModel(QObject):
         return overall_verdict
 
     def _save_session_to_excel(self, session: InspectionSession) -> None:
+        path = resolve_xlsx_path(self.settings.report.equipment_id)
         try:
-            append_session_xlsx(session)
+            append_session_xlsx(session, path)
         except PermissionError as exc:
             raise ExcelSaveFailedError(
                 "결과 파일(엑셀)이 다른 프로그램(예: Excel)에서 열려 있어 저장할 수 없습니다.\n"

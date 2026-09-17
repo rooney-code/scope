@@ -97,5 +97,8 @@
       "left",
       "right"
     ]
+  },
+  "report": {
+    "equipment_id": "TI_default"
   }
 }
